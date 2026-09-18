@@ -34,6 +34,17 @@ from onshape_robotics_toolkit.models.geometry import (
 )
 from onshape_robotics_toolkit.utilities import format_number
 
+# Floating-point noise from matrix decomposition (e.g. Rotation.from_matrix(...).as_euler(...))
+# shows up as values like -4.3121451e-14 in origin/axis xyz/rpy triples. Snap those to exact
+# zero before formatting. This deliberately does NOT touch format_number() itself, since that
+# helper is shared with inertia tensor components and mass values, which must keep full
+# precision even when genuinely tiny.
+_ORIGIN_NOISE_THRESHOLD = 1e-6
+
+
+def _clean_origin_component(value: float) -> float:
+    return 0.0 if abs(value) < _ORIGIN_NOISE_THRESHOLD else value
+
 
 class Colors(tuple[float, float, float, float], Enum):
     """
@@ -161,8 +172,8 @@ class Origin:
         """
 
         origin: _Element = ET.Element("origin") if root is None else ET.SubElement(root, "origin")
-        origin.set("xyz", " ".join(format_number(v) for v in self.xyz))
-        origin.set("rpy", " ".join(format_number(v) for v in self.rpy))
+        origin.set("xyz", " ".join(format_number(_clean_origin_component(v)) for v in self.xyz))
+        origin.set("rpy", " ".join(format_number(_clean_origin_component(v)) for v in self.rpy))
         return origin
 
     def to_mjcf(self, root: _Element) -> None:
@@ -326,7 +337,7 @@ class Axis:
         """
 
         axis: _Element = ET.Element("axis") if root is None else ET.SubElement(root, "axis")
-        axis.set("xyz", " ".join(format_number(v) for v in self.xyz))
+        axis.set("xyz", " ".join(format_number(_clean_origin_component(v)) for v in self.xyz))
         return axis
 
     def to_mjcf(self, root: _Element) -> None:

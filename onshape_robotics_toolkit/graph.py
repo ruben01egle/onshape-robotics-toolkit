@@ -25,7 +25,7 @@ import networkx as nx
 from loguru import logger
 
 from onshape_robotics_toolkit.config import record_kinematics_config
-from onshape_robotics_toolkit.models.assembly import MatedCS, MateFeatureData
+from onshape_robotics_toolkit.models.assembly import MatedCS, MateFeatureData, MateType
 from onshape_robotics_toolkit.parse import CAD, CHILD, PARENT, PathKey
 from onshape_robotics_toolkit.utilities.helpers import get_sanitized_name
 
@@ -73,6 +73,83 @@ def convert_to_digraph(graph: nx.Graph, user_defined_root: Optional[PathKey] = N
                 di_graph.add_edge(v, u, **data)
 
     return di_graph, root_node
+
+
+def resolve_root_mate(cad: CAD, root_mate_name: str) -> tuple[PathKey, MateFeatureData]:
+    """
+    Resolve the kinematic root from a named mate-to-origin, instead of a `.fixed` occurrence.
+
+    In Onshape, create a mate connector from the top-level assembly's own Origin (no dummy
+    fixed part needed) and FASTEN it to a mate connector placed inside the intended root part
+    or subassembly. That mate's assembly-origin side has an empty `matedOccurrence`; the other
+    side's occurrence identifies the root part.
+
+    Args:
+        cad: CAD assembly with PathKey-based registries (already fetched).
+        root_mate_name: Name of the top-level FASTENED mate-to-origin.
+
+    Returns:
+        A tuple of (root PathKey, the mate's MateFeatureData with matedEntities ordered as
+        [assembly-origin side, root-part side], so `matedEntities[-1].matedCS` gives the
+        root link's frame exactly like any other joint's child-side mate connector).
+
+    Raises:
+        ValueError: If the mate can't be found or resolved, identifying which check failed.
+            This never falls back to auto-detection - a wrong root would waste every
+            subsequent API call computing the wrong robot.
+    """
+    mate = cad.root_mate_candidates.get(root_mate_name)
+    if mate is None:
+        if any(existing_mate.name == root_mate_name for existing_mate in cad.mates.values()):
+            raise ValueError(
+                f"root_mate_name='{root_mate_name}' matches an existing mate, but it has an "
+                "occurrence on both sides (not a mate-to-assembly-origin). Create a mate "
+                "connector from the top-level assembly's own Origin and FASTEN it to the "
+                "intended root part/subassembly instead."
+            )
+        raise ValueError(
+            f"root_mate_name='{root_mate_name}' does not match any top-level mate-to-origin "
+            "candidate. Check the mate name and make sure it is a top-level (not subassembly) "
+            "FASTENED mate between the assembly Origin and the intended root part."
+        )
+
+    if mate.mateType != MateType.FASTENED:
+        raise ValueError(
+            f"root_mate_name='{root_mate_name}' resolves to a mate of type "
+            f"'{mate.mateType}', not FASTENED. A mate-to-origin root anchor must be FASTENED."
+        )
+
+    empty_entities = [entity for entity in mate.matedEntities if not entity.matedOccurrence]
+    nonempty_entities = [entity for entity in mate.matedEntities if entity.matedOccurrence]
+    if len(empty_entities) != 1 or len(nonempty_entities) != 1:
+        raise ValueError(
+            f"root_mate_name='{root_mate_name}' does not have exactly one assembly-origin side "
+            f"(empty matedOccurrence) and one part-occurrence side: "
+            f"{len(empty_entities)} empty, {len(nonempty_entities)} non-empty."
+        )
+
+    origin_entity = empty_entities[0]
+    other_entity = nonempty_entities[0]
+
+    other_path = tuple(other_entity.matedOccurrence)
+    root_key = cad.get_path_key(other_path)
+    if root_key is None:
+        raise ValueError(
+            f"root_mate_name='{root_mate_name}' occurrence path {other_path} does not resolve "
+            "to any known part in this assembly."
+        )
+
+    # NOTE: mirrors the rigid-assembly remap in KinematicGraph._remap_mates - if the resolved
+    # part belongs to a rigid subassembly, the graph's nodes are keyed by the rigid assembly
+    # root, not the individual part.
+    part = cad.parts.get(root_key)
+    if part is not None and part.rigidAssemblyKey is not None:
+        root_key = part.rigidAssemblyKey
+
+    resolved_mate = copy.deepcopy(mate)
+    resolved_mate.matedEntities = [origin_entity, other_entity]
+
+    return root_key, resolved_mate
 
 
 def create_graph(
@@ -213,6 +290,9 @@ class KinematicGraph(nx.DiGraph):
         cad: CAD assembly data with PathKey-based registries
         root_node: PathKey of the root node in the kinematic graph
         topological_order: Ordered sequence of nodes from root to leaves
+        root_mate: When the root was resolved via `root_mate_name`, the mate's
+            MateFeatureData (matedEntities ordered [origin side, root-part side]).
+            None when the root came from the legacy `.fixed`/centrality path.
     """
 
     # TODO: make sure we are not mutating classes and instead creating copies
@@ -238,11 +318,17 @@ class KinematicGraph(nx.DiGraph):
         """
         self.cad = cad
         self.root: Optional[PathKey] = None
+        self.root_mate: Optional[MateFeatureData] = None
 
         super().__init__()
 
     @classmethod
-    def from_cad(cls, cad: CAD, use_user_defined_root: bool = True) -> "KinematicGraph":
+    def from_cad(
+        cls,
+        cad: CAD,
+        use_user_defined_root: bool = True,
+        root_mate_name: Optional[str] = None,
+    ) -> "KinematicGraph":
         """
         Create and build kinematic graph from CAD assembly.
 
@@ -252,7 +338,16 @@ class KinematicGraph(nx.DiGraph):
 
         Args:
             cad: CAD assembly with PathKey-based registries
-            use_user_defined_root: Whether to use user-marked fixed part as root
+            use_user_defined_root: Whether to use user-marked fixed part as root.
+                Ignored when `root_mate_name` is given.
+            root_mate_name: Name of a top-level FASTENED mate between the assembly's
+                own Origin and the intended root part/subassembly (a "mate-to-origin").
+                Supersedes needing a dummy fixed part just to anchor the root. When
+                given, resolution is strict: if the mate can't be found or resolved,
+                this raises immediately instead of silently falling back to
+                `use_user_defined_root`/centrality-based auto-detection - continuing
+                with a wrong root would waste every subsequent API call computing the
+                wrong robot.
 
         Returns:
             Fully constructed KinematicGraph with nodes, edges, and root
@@ -262,15 +357,23 @@ class KinematicGraph(nx.DiGraph):
             >>> graph = KinematicGraph.from_cad(cad, use_user_defined_root=True)
             >>> print(f"Root: {graph.root_node}")
             >>> print(f"Nodes: {len(graph.graph.nodes)}")
+
+            >>> # Or, with a mate-to-origin instead of a dummy fixed part:
+            >>> graph = KinematicGraph.from_cad(cad, root_mate_name="root_mate")
         """
         kinematic_graph = cls(cad=cad)
-        kinematic_graph._build_graph(use_user_defined_root)
+
+        preset_root: Optional[PathKey] = None
+        if root_mate_name is not None:
+            preset_root, kinematic_graph.root_mate = resolve_root_mate(cad, root_mate_name)
+
+        kinematic_graph._build_graph(use_user_defined_root, preset_root=preset_root)
 
         record_kinematics_config(use_user_defined_root=use_user_defined_root)
 
         return kinematic_graph
 
-    def _build_graph(self, use_user_defined_root: bool) -> None:
+    def _build_graph(self, use_user_defined_root: bool, preset_root: Optional[PathKey] = None) -> None:
         """
         Build kinematic graph from CAD assembly data.
 
@@ -283,6 +386,8 @@ class KinematicGraph(nx.DiGraph):
 
         Args:
             use_user_defined_root: Whether to use user-defined fixed part as root
+            preset_root: Root PathKey already resolved (e.g. via a named mate-to-origin),
+                bypassing `.fixed`/centrality-based root detection entirely.
         """
         # remap the mates to switch out any parts that belong to rigid subassemblies
         remapped_mates = self._remap_mates(self.cad)
@@ -293,7 +398,7 @@ class KinematicGraph(nx.DiGraph):
             mates=remapped_mates,
         )
 
-        self._process_graph(raw_graph, involved_parts, remapped_mates, use_user_defined_root)
+        self._process_graph(raw_graph, involved_parts, remapped_mates, use_user_defined_root, preset_root)
 
         if len(self.nodes) == 0:
             logger.warning("KinematicGraph is empty - no valid parts found in mates")
@@ -310,6 +415,7 @@ class KinematicGraph(nx.DiGraph):
         parts: set[PathKey],
         mates: dict[tuple[PathKey, PathKey], MateFeatureData],
         use_user_defined_root: bool,
+        preset_root: Optional[PathKey] = None,
     ) -> None:
         """
         Process the graph:
@@ -322,6 +428,11 @@ class KinematicGraph(nx.DiGraph):
 
         # Handle empty graph case (assemblies with only mate groups and no fixed/rigid parts)
         if len(graph.nodes) == 0:
+            if preset_root is not None:
+                raise ValueError(
+                    f"root_mate_name resolved to part {preset_root}, but the kinematic graph has "
+                    "no nodes at all (no mates found). Cannot use it as a root."
+                )
             logger.warning(
                 "Graph has no nodes - assembly contains only mate groups with no rigid assemblies or fixed parts. "
                 "Cannot create kinematic graph."
@@ -332,16 +443,31 @@ class KinematicGraph(nx.DiGraph):
         if len(graph.nodes) == 1:
             logger.info("Graph has single node - this is a fully rigid assembly (one link, no joints)")
             single_node = next(iter(graph.nodes))
+            if preset_root is not None and preset_root != single_node:
+                raise ValueError(
+                    f"root_mate_name resolved to part {preset_root}, but the kinematic graph's "
+                    f"only node is {single_node}. Check the mate name and target part."
+                )
             self.root = single_node
             part = self.cad.parts[single_node]
             self.add_node(single_node, data=part)
             return
 
-        self._find_root_node(
-            graph=graph,
-            parts=parts,
-            use_user_defined_root=use_user_defined_root,
-        )
+        if preset_root is not None:
+            if preset_root not in graph.nodes:
+                raise ValueError(
+                    f"root_mate_name resolved to part {preset_root}, which is not part of the "
+                    "connected kinematic graph (it is not involved in any mate). Check the "
+                    "mate and the Base part it targets."
+                )
+            self.root = preset_root
+            logger.debug(f"Using mate-resolved root: {preset_root}")
+        else:
+            self._find_root_node(
+                graph=graph,
+                parts=parts,
+                use_user_defined_root=use_user_defined_root,
+            )
 
         bfs_graph = nx.bfs_tree(graph, self.root)
         # NOTE: add all nodes in the BFS order

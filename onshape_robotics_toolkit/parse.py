@@ -275,6 +275,7 @@ class CAD:
     patterns: dict[str, Pattern]
     parts: dict[PathKey, Part]  # Populated eagerly from assembly.parts
     mate_connectors: list[MateConnectorFeatureData]
+    root_mate_candidates: dict[str, MateFeatureData]  # top-level mates with an assembly-origin side, by name
 
     def __init__(
         self,
@@ -317,6 +318,7 @@ class CAD:
         self.parts = {}
         self.subassemblies = {}
         self.mate_connectors = []
+        self.root_mate_candidates = {}
 
         self._client = client
 
@@ -1064,6 +1066,16 @@ class CAD:
                 child_occ = mate_data.matedEntities[CHILD].matedOccurrence
             except Exception:
                 logger.warning(f"Malformed mate feature {mate_data.name}")
+                return
+
+            # NOTE: a mate connector built from the top-level assembly's own Origin (rather
+            # than from any occurrence) has an empty matedOccurrence on that side. This is
+            # the standard pattern for a "mate-to-origin" root anchor (no dummy fixed part
+            # needed). Such a mate can never resolve to a normal parent->child kinematic
+            # edge, so stash it separately for KinematicGraph.from_cad(root_mate_name=...)
+            # instead of falling through to the "Missing PathKey" warning below.
+            if assembly_key is None and (not parent_occ or not child_occ):
+                self.root_mate_candidates[mate_data.name] = copy.deepcopy(mate_data)
                 return
 
             parent_path = tuple(parent_occ)

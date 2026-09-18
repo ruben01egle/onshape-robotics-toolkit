@@ -200,7 +200,7 @@ def test_all_supported_mate_types() -> None:
     revolute_mate = _make_mate("revolute", MateType.REVOLUTE, ["parent"], ["child"])
     joints, links = get_robot_joint(parent_key, child_key, revolute_mate, IDENTITY_TF, used_names)
     assert isinstance(joints[(parent_key, child_key)], RevoluteJoint)
-    assert joints[(parent_key, child_key)].axis.xyz == (0.0, 0.0, -1.0)
+    assert joints[(parent_key, child_key)].axis.xyz == (0.0, 0.0, 1.0)
     assert links == {}
 
     # Test FASTENED -> FixedJoint
@@ -213,7 +213,7 @@ def test_all_supported_mate_types() -> None:
     slider_mate = _make_mate("slider", MateType.SLIDER, ["parent"], ["child"])
     joints, links = get_robot_joint(parent_key, child_key, slider_mate, IDENTITY_TF, used_names)
     assert isinstance(joints[(parent_key, child_key)], PrismaticJoint)
-    assert joints[(parent_key, child_key)].axis.xyz == (0.0, 0.0, -1.0)
+    assert joints[(parent_key, child_key)].axis.xyz == (0.0, 0.0, 1.0)
     assert links == {}
 
     # Test CYLINDRICAL -> PrismaticJoint (treated same as SLIDER)

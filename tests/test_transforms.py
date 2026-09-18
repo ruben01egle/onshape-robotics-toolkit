@@ -377,7 +377,7 @@ class TestBallJointTransforms:
         joint_list = list(joints_dict.values())
         assert np.allclose(joint_list[0].axis.xyz, [1.0, 0.0, 0.0]), "First joint should rotate about X"
         assert np.allclose(joint_list[1].axis.xyz, [0.0, 1.0, 0.0]), "Second joint should rotate about Y"
-        assert np.allclose(joint_list[2].axis.xyz, [0.0, 0.0, -1.0]), "Third joint should rotate about -Z"
+        assert np.allclose(joint_list[2].axis.xyz, [0.0, 0.0, 1.0]), "Third joint should rotate about Z"
 
     def test_ball_joint_dummy_links_have_zero_mass(self) -> None:
         """Ball joint dummy links should have zero mass."""

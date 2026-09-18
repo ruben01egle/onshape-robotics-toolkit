@@ -39,7 +39,7 @@ from onshape_robotics_toolkit.config import (
     record_variable_update,
 )
 from onshape_robotics_toolkit.mesh import transform_mesh
-from onshape_robotics_toolkit.models.assembly import Assembly, Features, RootAssembly
+from onshape_robotics_toolkit.models.assembly import Assembly, Features, FeatureType, RootAssembly
 from onshape_robotics_toolkit.models.document import BASE_URL, Document, DocumentMetaData, generate_url
 from onshape_robotics_toolkit.models.element import Element
 from onshape_robotics_toolkit.models.mass import MassProperties
@@ -415,6 +415,26 @@ class Client:
         """
         request_path = f"/api/assemblies/d/{did}/{wtype}/{wid}/e/{eid}/features"
         response_json = self.request(HTTP.GET, request_path, log_response=True).json()
+
+        # NOTE: Onshape can emit feature types the toolkit doesn't model yet (e.g. "explosion"
+        # from an exploded view). Validating the raw list atomically would let a single
+        # unrecognized featureType discard every feature in the response, including mates
+        # whose limits we still need. Drop only the offending entries instead.
+        valid_feature_types = {member.value for member in FeatureType}
+        raw_features = response_json.get("features", [])
+        filtered_features = []
+        for raw_feature in raw_features:
+            feature_type = raw_feature.get("message", {}).get("featureType")
+            if feature_type not in valid_feature_types:
+                feature_id = raw_feature.get("message", {}).get("featureId", "unknown")
+                logger.warning(
+                    f"Skipping feature with unrecognized featureType '{feature_type}' "
+                    f"(feature id: {feature_id})"
+                )
+                continue
+            filtered_features.append(raw_feature)
+        response_json["features"] = filtered_features
+
         return Features.model_validate(response_json)
 
     def get_assembly_name(

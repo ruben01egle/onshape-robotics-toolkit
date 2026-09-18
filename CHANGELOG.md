@@ -1,5 +1,19 @@
 # Changelog
 
+## [Unreleased] — fork changes
+
+### Bug Fixes
+
+* fix mate-limit fetch discarding limits for an entire assembly when any feature has an unrecognized "explosion" featureType
+* fix revolute joint axis sign (was `0 0 -1`, now `0 0 1`) and apply the corresponding limit negate-and-swap already used by prismatic joints, so joint limits stay physically correct
+* snap floating-point noise in `<origin>` xyz/rpy values to exact `0` below a `1e-6` threshold, without touching inertia tensor or mass values
+
+### Features
+
+* add `uniform_link_color` option to `Robot.from_graph()` (default gray `(0.5, 0.5, 0.5, 1.0)`) instead of a random color per link; pass `None` to restore the old random-per-part behavior
+* add `root_mate_name` parameter to `KinematicGraph.from_cad()` to select the kinematic root via a named mate-to-origin, avoiding the need for a throwaway dummy fixed part
+* move `xacro_export.py`'s URDF-to-xacro conversion into the package as `onshape_robotics_toolkit.formats.xacro`
+
 ## [0.6.0](https://github.com/neurobionics/onshape-robotics-toolkit/compare/onshape-robotics-toolkit-v0.5.0...onshape-robotics-toolkit-v0.6.0) (2026-02-15)
 
 

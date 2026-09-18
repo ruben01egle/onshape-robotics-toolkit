@@ -58,6 +58,94 @@ cd onshape-robotics-toolkit
 uv sync
 ```
 
+## URDF Export Notes
+
+A few behaviors of the CAD → URDF export pipeline are worth calling out explicitly:
+
+- **Link color.** `Robot.from_graph()` accepts a `uniform_link_color` parameter (default
+  `(0.5, 0.5, 0.5, 1.0)`), applied to every link's material so exported robots don't get an
+  arbitrary rainbow of per-part colors. Pass `uniform_link_color=None` to opt back into the
+  legacy behavior of picking a random color per part from the built-in `Colors` palette.
+- **Joint axis convention.** Every revolute, prismatic, and ball-joint sub-joint is emitted
+  with `<axis xyz="0 0 1"/>` (previously `0 0 -1`). Joint limits are computed consistently
+  relative to that `+Z` axis, so `<limit lower=".../" upper="..."/>` values already reflect
+  the real Onshape mate limits - no manual sign-flipping is needed downstream.
+- **Origin noise snapping.** `xyz`/`rpy` components of `<origin>` tags (and `<axis>` tags)
+  that are smaller than `1e-6` in magnitude are snapped to exact `0`, cleaning up floating-point
+  noise from matrix decomposition (e.g. `-4.3121451e-14`). This snapping deliberately does
+  **not** apply to inertia tensor components (`ixx`, `ixy`, ..., `izz`) or mass values, which
+  keep full precision even when genuinely tiny.
+- **Root selection via a named mate-to-origin.** `KinematicGraph.from_cad()` accepts a
+  `root_mate_name` parameter, which supersedes the older `use_user_defined_root` /
+  `.fixed`-occurrence workflow for choosing the kinematic root. Instead of adding a
+  throwaway dummy part, marking it fixed, and mating it to your real base (`Base`) purely to
+  give the toolkit something to anchor on, you can now create a mate connector directly from
+  the top-level assembly's own **Origin** (Onshape supports this natively - no dummy part
+  needed) and add a **FASTENED** mate between that connector and a connector placed inside
+  `Base`, naming the mate something recognizable (e.g. `root_mate`):
+
+  ```python
+  graph = KinematicGraph.from_cad(cad, root_mate_name="root_mate")
+  ```
+
+  This resolves the root directly from that mate's data (the same `MateFeatureData` shape
+  used for every other joint), using the mate's own coordinate system to place the root
+  link's frame. If `root_mate_name` is given and can't be resolved (no such mate, not a
+  `FASTENED` mate, or neither side is an assembly-origin connector), this raises immediately
+  rather than silently falling back to auto-detection - avoiding wasted API calls computing
+  the wrong robot. `root_mate_name=None` (the default) preserves the original
+  `use_user_defined_root` / centrality-based behavior unchanged.
+
+## Using This Fork From Another Repo
+
+This fork (`ruben01egle/onshape-robotics-toolkit`) carries fixes and features not yet
+upstream (see `CHANGES.md`). The recommended way to consume it from a separate repo -
+e.g. one that holds a finished robot description and just needs to regenerate its URDF
+occasionally - is a plain **git dependency** pinned to this fork's `main` branch. No
+submodule, no private package index required.
+
+1. **Push this fork's changes to `origin/main`** (`git@github.com:ruben01egle/onshape-robotics-toolkit.git`)
+   first - a git dependency can only install what's actually been pushed.
+
+2. **In the destination repo**, add the dependency pointing at this fork instead of PyPI.
+
+   With `uv` (recommended, since this project uses `uv`):
+
+   ```toml
+   [project]
+   dependencies = [
+       "onshape-robotics-toolkit",
+   ]
+
+   [tool.uv.sources]
+   onshape-robotics-toolkit = { git = "https://github.com/ruben01egle/onshape-robotics-toolkit.git", branch = "main" }
+   ```
+
+   then `uv sync`.
+
+   With plain `pip` / `requirements.txt`:
+
+   ```
+   onshape-robotics-toolkit @ git+https://github.com/ruben01egle/onshape-robotics-toolkit.git@main
+   ```
+
+3. **Pulling in new fork commits later** - a branch pin still resolves to one locked
+   commit until you explicitly refresh it:
+
+   - `uv`: `uv lock --upgrade-package onshape-robotics-toolkit && uv sync`
+   - `pip`: `pip install -U --force-reinstall git+https://github.com/ruben01egle/onshape-robotics-toolkit.git@main`
+
+4. **Move the URDF-generation script itself into the destination repo.** `robotarm_urdf.py`
+   in this repo is a self-contained example - copy it (and the `.env` file it reads via
+   `Client(env=".env")`) into the destination repo's root. It only needs the package
+   installed as above; `xacro_export.py` does **not** need to move separately, since its
+   logic now lives in the package as `onshape_robotics_toolkit.formats.xacro` (imported
+   via `from onshape_robotics_toolkit.formats.xacro import convert_urdf_to_xacro`).
+
+5. **Run it from the destination repo's root.** The script writes to CWD-relative paths
+   (`output/robotarm.urdf`, `output/meshes/`, `robotarm.log`), so it should be invoked
+   from wherever you want that `output/` directory to land.
+
 ## Documentation
 
 The documentation is available at [https://neurobionics.github.io/onshape-robotics-toolkit/](https://neurobionics.github.io/onshape-robotics-toolkit/). It is generated using `mkdocs` and `mkdocs-material` and hosted on GitHub Pages.

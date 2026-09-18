@@ -213,6 +213,7 @@ class RobotBuildConfig(BaseModel):
     name: str = Field(...)
     type: Literal["urdf", "xml"] = Field(default="urdf")
     fetch_mass_properties: bool = Field(default=True)
+    uniform_link_color: tuple[float, float, float, float] | None = Field(default=(0.5, 0.5, 0.5, 1.0))
 
 
 class ExportConfig(BaseModel):
@@ -464,13 +465,19 @@ def record_kinematics_config(use_user_defined_root: bool) -> None:
     _update_session("kinematics", KinematicsConfig(use_user_defined_root=use_user_defined_root))
 
 
-def record_robot_config(name: str, fetch_mass_properties: bool, robot_type: Literal["urdf", "xml"] = "urdf") -> None:
+def record_robot_config(
+    name: str,
+    fetch_mass_properties: bool,
+    robot_type: Literal["urdf", "xml"] = "urdf",
+    uniform_link_color: tuple[float, float, float, float] | None = (0.5, 0.5, 0.5, 1.0),
+) -> None:
     _update_session(
         "robot",
         RobotBuildConfig(
             name=name,
             type=robot_type,
             fetch_mass_properties=fetch_mass_properties,
+            uniform_link_color=uniform_link_color,
         ),
     )
 

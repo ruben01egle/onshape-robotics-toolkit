@@ -104,6 +104,7 @@ def get_robot_link(
     client: Client,
     mate: Optional[Union[MateFeatureData, None]] = None,
     mesh_dir: Optional[str] = None,
+    uniform_link_color: Optional[tuple[float, float, float, float]] = (0.5, 0.5, 0.5, 1.0),
 ) -> tuple[Link, np.matrix, Asset]:
     """
     Generate a URDF link from an Onshape part.
@@ -114,6 +115,9 @@ def get_robot_link(
         client: The Onshape client object to use for sending API requests.
         mate: MateFeatureData object to use for generating the transformation matrix.
         mesh_dir: Optional custom directory for mesh files.
+        uniform_link_color: RGBA color applied to every link's material. Defaults to a
+            uniform gray (0.5, 0.5, 0.5, 1.0). Pass None to restore the legacy behavior
+            of picking a random color per part from the `Colors` palette.
 
     Returns:
         tuple[Link, np.matrix]: The generated link object
@@ -208,7 +212,12 @@ def get_robot_link(
             name=f"{name}_visual",
             origin=_origin,
             geometry=MeshGeometry(_mesh_path),
-            material=Material.from_color(name=f"{name}-material", color=random.SystemRandom().choice(list(Colors))),
+            material=Material(
+                name=f"{name}-material",
+                color=uniform_link_color
+                if uniform_link_color is not None
+                else random.SystemRandom().choice(list(Colors)),
+            ),
         ),
         inertial=InertialLink(
             origin=Origin(
@@ -307,13 +316,15 @@ def get_robot_joint(
         revolute_limits = None
         limit_source = None
 
+        # NOTE: negate-and-swap min/max, matching the convention already used for
+        # prismatic joints below, so limit signs stay consistent with the emitted axis.
         config_limits = resolve_mate_limits(base_name)
         if config_limits is not None and "min" in config_limits and "max" in config_limits:
             revolute_limits = JointLimits(
                 effort=1.0,
                 velocity=1.0,
-                lower=config_limits["min"],
-                upper=config_limits["max"],
+                lower=-config_limits["max"],
+                upper=-config_limits["min"],
             )
             limit_source = "config"
         elif mate.limits is not None and "min" in mate.limits and "max" in mate.limits:
@@ -321,8 +332,8 @@ def get_robot_joint(
             revolute_limits = JointLimits(
                 effort=1.0,
                 velocity=1.0,
-                lower=mate.limits["min"],
-                upper=mate.limits["max"],
+                lower=-mate.limits["max"],
+                upper=-mate.limits["min"],
             )
             limit_source = "API"
 
@@ -346,7 +357,7 @@ def get_robot_joint(
             child=child_link_name,
             origin=origin,
             limits=revolute_limits,
-            axis=Axis((0.0, 0.0, -1.0)),
+            axis=Axis((0.0, 0.0, 1.0)),
             # dynamics=JointDynamics(damping=0.1, friction=0.1),
             mimic=mimic,
         )
@@ -358,8 +369,7 @@ def get_robot_joint(
 
     elif mate.mateType == MateType.SLIDER or mate.mateType == MateType.CYLINDRICAL:
         # For prismatic joints, use fetched limits or defaults (in meters)
-        # NOTE: Onshape limits are defined along +Z axis, but URDF uses -Z axis
-        # So we need to negate and swap min/max to account for the flipped direction
+        # NOTE: negate-and-swap min/max to keep limit signs consistent with the emitted axis.
         prismatic_lower: float | None = None
         prismatic_upper: float | None = None
         limit_source = None
@@ -403,7 +413,7 @@ def get_robot_joint(
                 lower=prismatic_lower,
                 upper=prismatic_upper,
             ),
-            axis=Axis((0.0, 0.0, -1.0)),
+            axis=Axis((0.0, 0.0, 1.0)),
             # dynamics=JointDynamics(damping=0.1, friction=0.1),
             mimic=mimic,
         )
@@ -479,7 +489,7 @@ def get_robot_joint(
                 lower=-2 * np.pi,
                 upper=2 * np.pi,
             ),
-            axis=Axis((0.0, 0.0, -1.0)),
+            axis=Axis((0.0, 0.0, 1.0)),
             # dynamics=JointDynamics(damping=0.1, friction=0.1),
             mimic=mimic,
         )
@@ -551,6 +561,7 @@ class Robot(nx.DiGraph):
         client: Client,
         name: str,
         fetch_mass_properties: bool = True,
+        uniform_link_color: Optional[tuple[float, float, float, float]] = (0.5, 0.5, 0.5, 1.0),
     ) -> "Robot":
         """
         Create a Robot from pre-built CAD and KinematicGraph objects.
@@ -564,6 +575,9 @@ class Robot(nx.DiGraph):
             client: Onshape client for downloading assets and fetching mass properties
             name: The name of the robot
             fetch_mass_properties: Whether to fetch mass properties for kinematic parts
+            uniform_link_color: RGBA color applied to every link's material. Defaults to a
+                uniform gray (0.5, 0.5, 0.5, 1.0). Pass None to restore the legacy behavior
+                of picking a random color per part from the `Colors` palette.
 
         Returns:
             Robot: The generated robot model
@@ -599,6 +613,7 @@ class Robot(nx.DiGraph):
         record_robot_config(
             name=name,
             fetch_mass_properties=fetch_mass_properties,
+            uniform_link_color=uniform_link_color,
         )
 
         # Get root node from kinematic graph
@@ -617,7 +632,8 @@ class Robot(nx.DiGraph):
             name=root_name,
             part=root_part,
             client=client,
-            mate=None,
+            mate=kinematic_graph.root_mate,
+            uniform_link_color=uniform_link_color,
         )
 
         robot.add_node(root_key, data=root_link, asset=root_asset, world_to_link_tf=world_to_root_link)
@@ -666,6 +682,7 @@ class Robot(nx.DiGraph):
                 part=child_part,
                 client=client,
                 mate=mate_data,
+                uniform_link_color=uniform_link_color,
             )
 
             # Add child link if not already in graph

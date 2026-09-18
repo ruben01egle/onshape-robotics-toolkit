@@ -1450,6 +1450,7 @@ class FeatureType(str, Enum):
     EMPTY = ""
     MATE_CONNECTOR = "mateConnector"
     MATE_GROUP = "mateGroup"
+    EXPLOSION = "explosion"
 
 
 class InferenceType(str, Enum):
