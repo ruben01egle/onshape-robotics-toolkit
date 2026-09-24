@@ -38,7 +38,7 @@ from onshape_robotics_toolkit.config import (
     record_document_config,
     record_variable_update,
 )
-from onshape_robotics_toolkit.mesh import transform_mesh
+from onshape_robotics_toolkit.mesh import SOURCE_MESH_DIR, transform_mesh
 from onshape_robotics_toolkit.models.assembly import Assembly, Features, FeatureType, RootAssembly
 from onshape_robotics_toolkit.models.document import BASE_URL, Document, DocumentMetaData, generate_url
 from onshape_robotics_toolkit.models.element import Element
@@ -1274,6 +1274,7 @@ class Asset:
         self.is_from_file = is_from_file
         self.mesh_dir = mesh_dir
         self.robot_file_dir: Optional[str] = None  # Directory where robot file is saved, for relative path calculation
+        self.collision_paths: list[str] = []  # Absolute paths of locally generated collision meshes, if any
 
         self._file_path: Optional[str] = None
 
@@ -1314,9 +1315,28 @@ class Asset:
         rel_path = os.path.relpath(self.absolute_path, base_dir)
         return rel_path.replace(os.sep, "/")
 
-    async def download(self) -> None:
+    @property
+    def source_path(self) -> str:
+        """
+        Returns the path of the full-resolution mesh kept for local post-processing
+        (``<mesh_dir>/source/<file_name>``).
+        """
+        return os.path.join(os.path.dirname(self.absolute_path), SOURCE_MESH_DIR, self.file_name)
+
+    @property
+    def collision_relative_paths(self) -> list[str]:
+        """
+        Returns the collision mesh paths relative to the robot file directory, with forward slashes.
+        """
+        base_dir = self.robot_file_dir if self.robot_file_dir is not None else CURRENT_DIR
+        return [os.path.relpath(path, base_dir).replace(os.sep, "/") for path in self.collision_paths]
+
+    async def download(self, file_path: Optional[str] = None) -> None:
         """
         Asynchronously download the mesh file from Onshape, transform it, and save it to a file.
+
+        Args:
+            file_path: Where to save the mesh. Defaults to ``absolute_path``.
 
         Examples:
             >>> asset = Asset(
@@ -1362,9 +1382,11 @@ class Asset:
 
                 raw_mesh = stl.mesh.Mesh.from_file(None, fh=buffer)
                 transformed_mesh = transform_mesh(raw_mesh, self.transform) if self.transform is not None else raw_mesh
-                transformed_mesh.save(self.absolute_path)
+                save_path = file_path or self.absolute_path
+                os.makedirs(os.path.dirname(save_path), exist_ok=True)
+                transformed_mesh.save(save_path)
 
-                logger.debug(f"Mesh file saved: {self.absolute_path}")
+                logger.debug(f"Mesh file saved: {save_path}")
         except Exception as e:
             logger.error(f"Failed to download {self.file_name}: {e}")
 
@@ -1392,6 +1414,12 @@ class Asset:
         asset = ET.Element("mesh") if root is None else ET.SubElement(root, "mesh")
         asset.set("name", self.file_name.split(".")[0])
         asset.set("file", self.relative_path)
+
+        if root is not None:
+            for path in self.collision_relative_paths:
+                collision_asset = ET.SubElement(root, "mesh")
+                collision_asset.set("name", os.path.splitext(os.path.basename(path))[0])
+                collision_asset.set("file", path)
 
     @classmethod
     def from_file(cls, file_path: str) -> "Asset":

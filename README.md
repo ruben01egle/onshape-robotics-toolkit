@@ -96,6 +96,86 @@ A few behaviors of the CAD → URDF export pipeline are worth calling out explic
   the wrong robot. `root_mate_name=None` (the default) preserves the original
   `use_user_defined_root` / centrality-based behavior unchanged.
 
+## Lighter Visual Meshes and Convex Collision Meshes
+
+By default every link's `<visual>` and `<collision>` point at the same full-resolution STL
+from Onshape, which is heavy to render (RViz) and slow for collision checking in motion
+planners. Passing `mesh_options` to `save()` post-processes the meshes **locally**:
+
+```python
+from onshape_robotics_toolkit.mesh import MeshOptions
+
+URDFSerializer().save(
+    robot,
+    "output/robot.urdf",
+    download_assets=True,          # or False to reuse meshes from an earlier export
+    mesh_options=MeshOptions(
+        visual_max_faces=100_000,                # decimate visuals; None = keep full resolution
+        collision_mode="convex_decomposition",   # "convex_hull" | "convex_decomposition" | "mesh"
+        collision_max_hulls=16,                  # convex pieces per link (decomposition only)
+        collision_hull_max_vertices=64,          # vertices per convex piece
+        collision_concavity=0.05,                # lower = tighter fit, more pieces
+    ),
+)
+```
+
+- **No extra Onshape API calls.** The download requests are unchanged: one STL request per
+  part / one export per rigid subassembly, and each subassembly is still a single fused mesh.
+  All processing happens on the downloaded files. With `download_assets=False` it runs
+  entirely offline on the meshes already on disk (existing `meshes/<link>.stl` files from an
+  earlier export are picked up as the source automatically).
+- **Output layout** (inside the mesh directory):
+  - `source/<link>.stl` - full-resolution download, kept so options can be changed later
+    without re-downloading
+  - `<link>.stl` - visual mesh (decimated if `visual_max_faces` is set)
+  - `collision/<link>_collision_<i>.stl` - convex collision pieces; each becomes its own
+    `<collision>` element (URDF) / `geom` (MJCF)
+  - `.mesh_cache.json` - links whose source mesh and options are unchanged are skipped on
+    the next export
+- **Choosing `visual_max_faces`.** Onshape meshes of multi-part subassemblies are many
+  small open bodies (screws, washers, ...), and quadric decimation degrades them quickly
+  below ~100k faces. Measured on a ~250-460k-face robot-arm link, the 99th-percentile surface
+  deviation was ~1-3 mm at 200k faces, ~3-9 mm at 100k and ~10-18 mm at 60k. 100k faces
+  per link is a good default for RViz; decimation is best-effort and may stop slightly above
+  the target on such meshes.
+- **Collision modes:**
+  - `"convex_hull"`: one convex hull per link. Instant, but fills concave gaps (e.g. the
+    inside of a bracket or the space between gripper fingers).
+  - `"convex_decomposition"`: splits each link into several convex hulls with
+    [CoACD](https://github.com/SarahWeiii/CoACD). Tight fit for complex multi-part links;
+    takes seconds to minutes per link at export time (links are processed in parallel and
+    cached; ~4 min for a 7-link arm on first export, instant afterwards). Needs the optional extra: `pip install "onshape-robotics-toolkit[collision]"`
+    (for a git dependency: `onshape-robotics-toolkit[collision] @ git+...`). Without it,
+    this mode falls back to `"convex_hull"` with a warning.
+  - `"mesh"`: legacy behavior, collision reuses the visual mesh.
+- **Planner notes.** Low-poly convex pieces are the fast path in FCL (MoveIt) and
+  hpp-fcl/coal (Pinocchio). In Pinocchio, call `buildConvexRepresentation(False)` on each
+  collision geometry and use its `.convex` to get GJK instead of mesh-mesh BVH checks. In
+  MoveIt, also generate an SRDF that disables collision checks between adjacent /
+  never-colliding links - that is often as large a speedup as the mesh simplification.
+- Without `mesh_options` (the default), export behaves exactly as before.
+
+**Standalone post-processing of an existing export.** `process_urdf_meshes` runs the same
+processing directly on a URDF or xacro file and its mesh folder - no `Client`, no `Robot`,
+no API calls. It replaces each link's `<collision>` elements (keeping the visual mesh's
+path prefix, so `package://` paths keep working) and can be re-run with other options,
+since it always starts from the full-resolution copy in `source/`
+(see [`examples/postprocess/main.py`](examples/postprocess/main.py)):
+
+```python
+from onshape_robotics_toolkit.formats import process_urdf_meshes
+from onshape_robotics_toolkit.mesh import MeshOptions
+
+process_urdf_meshes(
+    "output/robotarm.urdf",          # or e.g. "urdf/robotarm_geometry.xacro"
+    mesh_dir="output/meshes",
+    mesh_options=MeshOptions(visual_max_faces=100_000, collision_mode="convex_decomposition"),
+)
+```
+
+When shipping the meshes in a ROS package, `source/` (full-resolution copies) is not
+referenced by the URDF and can be left out of the install / version control.
+
 ## Using This Fork From Another Repo
 
 This fork (`ruben01egle/onshape-robotics-toolkit`) carries fixes and features not yet

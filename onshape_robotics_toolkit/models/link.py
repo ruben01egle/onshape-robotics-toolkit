@@ -15,7 +15,7 @@ Enum:
     - **Colors**: Enumerates the possible colors for a link in the robot model.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional, Union
 
@@ -1182,7 +1182,8 @@ class Link:
     Attributes:
         name (str): The unique identifier for the link.
         visual (VisualLink | None): Optional visual properties for rendering.
-        collision (CollisionLink | None): Optional collision properties for physics simulation.
+        collision (list[CollisionLink]): Collision elements (a link may have several, e.g. one per
+            convex hull). A single CollisionLink or None is also accepted and normalized to a list.
         inertial (InertialLink | None): Optional inertial properties for dynamics.
 
     Methods:
@@ -1215,8 +1216,16 @@ class Link:
 
     name: str
     visual: VisualLink | None = None
-    collision: CollisionLink | None = None
+    collision: list[CollisionLink] = field(default_factory=list)
     inertial: InertialLink | None = None
+
+    def __post_init__(self) -> None:
+        # Backwards compatibility: accept a single CollisionLink or None
+        collision: object = self.collision
+        if collision is None:
+            self.collision = []
+        elif isinstance(collision, CollisionLink):
+            self.collision = [collision]
 
     def to_xml(self, root: Optional[_Element] = None) -> _Element:
         """
@@ -1242,8 +1251,8 @@ class Link:
         link.set("name", self.name)
         if self.visual is not None:
             self.visual.to_xml(link)
-        if self.collision is not None:
-            self.collision.to_xml(link)
+        for collision in self.collision:
+            collision.to_xml(link)
         if self.inertial is not None:
             self.inertial.to_xml(link)
         return link
@@ -1275,8 +1284,8 @@ class Link:
             link.set("pos", " ".join(map(str, self.visual.origin.xyz)))
             link.set("euler", " ".join(map(str, self.visual.origin.rpy)))
 
-        if self.collision:
-            self.collision.to_mjcf(link)
+        for collision in self.collision:
+            collision.to_mjcf(link)
 
         if self.visual:
             self.visual.to_mjcf(link)
@@ -1300,15 +1309,14 @@ class Link:
         Examples:
             >>> xml = ET.Element('link')
             >>> Link.from_xml(xml)
-            Link(name='link', visual=None, collision=None, inertial=None)
+            Link(name='link', visual=None, collision=[], inertial=None)
         """
         name = xml.get("name")
 
         visual_element = xml.find("visual")
         visual = VisualLink.from_xml(visual_element) if visual_element is not None else None
 
-        collision_element = xml.find("collision")
-        collision = CollisionLink.from_xml(collision_element) if collision_element is not None else None
+        collision = [CollisionLink.from_xml(collision_element) for collision_element in xml.findall("collision")]
 
         inertial_element = xml.find("inertial")
         inertial = InertialLink.from_xml(inertial_element) if inertial_element is not None else None

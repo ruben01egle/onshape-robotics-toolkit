@@ -36,6 +36,7 @@ import yaml
 from loguru import logger
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from onshape_robotics_toolkit.mesh import MeshOptions
 from onshape_robotics_toolkit.models.document import BASE_URL, generate_url, parse_url
 
 __all__ = [
@@ -222,6 +223,7 @@ class ExportConfig(BaseModel):
     file_path: str | None = Field(default=None)
     download_assets: bool = Field(default=True)
     mesh_dir: str | None = Field(default=None)
+    mesh_options: MeshOptions | None = Field(default=None)
 
 
 class ORTConfig(BaseModel):
@@ -487,10 +489,13 @@ def record_export_config(
     file_path: str | None,
     download_assets: bool,
     mesh_dir: str | None,
+    mesh_options: MeshOptions | None = None,
 ) -> None:
     _update_session(
         "export",
-        ExportConfig(file_path=file_path, download_assets=download_assets, mesh_dir=mesh_dir),
+        ExportConfig(
+            file_path=file_path, download_assets=download_assets, mesh_dir=mesh_dir, mesh_options=mesh_options
+        ),
     )
 
 

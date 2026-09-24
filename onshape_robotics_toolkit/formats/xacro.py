@@ -10,10 +10,11 @@ kinematic chain.
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 from lxml import etree as ET
+
+from onshape_robotics_toolkit.mesh import SOURCE_MESH_DIR
 
 XACRO_NS = "http://www.ros.org/wiki/xacro"
 
@@ -47,23 +48,36 @@ def _rewrite_mesh_paths(robot_elem: ET._Element, package_name: str) -> None:
         mesh.set("filename", f"package://{package_name}/{filename}")
 
 
+def _mesh_path_in_dir(filename: str, mesh_dir: str) -> str:
+    """Return a URDF mesh filename relative to mesh_dir, keeping subdirectories such as
+    ``collision/`` (e.g. ``meshes/collision/a.stl`` with mesh_dir ``meshes`` -> ``collision/a.stl``).
+    """
+    parts = filename.replace("\\", "/").split("/")
+    mesh_dir_name = Path(mesh_dir).name
+    if mesh_dir_name in parts[:-1]:
+        index = len(parts) - 1 - parts[::-1].index(mesh_dir_name)
+        return "/".join(parts[index + 1 :])
+    return parts[-1]
+
+
 def _strip_root_link(
     robot_elem: ET._Element,
     root_link_name: str,
     mesh_dir: str,
 ) -> None:
-    """Reduce the root link to a bare <link name="..."/>, deleting its mesh file on
-    disk unless another link in this URDF still references the same mesh filename.
+    """Reduce the root link to a bare <link name="..."/>, deleting its mesh files on
+    disk (and the full-resolution copy in ``source/``, if any) unless another link in
+    this URDF still references the same mesh file.
     """
-    # A link's own <visual> and <collision> both reference the same mesh, so count
-    # distinct *links* referencing a given basename, not raw <mesh> element occurrences.
-    links_by_mesh_basename: dict[str, set[str]] = {}
+    # A link's <visual> and <collision> may reference the same mesh, so count
+    # distinct *links* referencing a given file, not raw <mesh> element occurrences.
+    links_by_mesh_path: dict[str, set[str]] = {}
     for link in robot_elem.findall("link"):
         link_name = link.get("name")
         for mesh in link.iter("mesh"):
             filename = mesh.get("filename")
             if filename:
-                links_by_mesh_basename.setdefault(os.path.basename(filename), set()).add(link_name)
+                links_by_mesh_path.setdefault(_mesh_path_in_dir(filename, mesh_dir), set()).add(link_name)
 
     root_link = next(
         (link for link in robot_elem.findall("link") if link.get("name") == root_link_name),
@@ -72,19 +86,21 @@ def _strip_root_link(
     if root_link is None:
         return
 
-    root_mesh_basenames = {
-        os.path.basename(mesh.get("filename")) for mesh in root_link.iter("mesh") if mesh.get("filename")
+    root_mesh_paths = {
+        _mesh_path_in_dir(filename, mesh_dir)
+        for mesh in root_link.iter("mesh")
+        if (filename := mesh.get("filename")) is not None
     }
 
     for child in list(root_link):
         root_link.remove(child)
 
-    for basename in root_mesh_basenames:
-        if len(links_by_mesh_basename.get(basename, set())) > 1:
+    for relative_path in root_mesh_paths:
+        if len(links_by_mesh_path.get(relative_path, set())) > 1:
             continue
-        mesh_path = Path(mesh_dir) / basename
-        if mesh_path.exists():
-            mesh_path.unlink()
+        for mesh_path in (Path(mesh_dir) / relative_path, Path(mesh_dir) / SOURCE_MESH_DIR / relative_path):
+            if mesh_path.exists():
+                mesh_path.unlink()
 
 
 def _resolve_tip_link(leaf_links: set[str], tip_link: str | None) -> str:

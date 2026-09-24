@@ -32,6 +32,8 @@ def main() -> None:
     export_path = config.export.file_path if config and config.export and config.export.file_path else str(EXPORT_PATH)
     download_assets = config.export.download_assets if config and config.export else True
     mesh_dir = config.export.mesh_dir if config and config.export and config.export.mesh_dir else MESH_DIR
+    # Local-only mesh post-processing (no extra API calls): lighter visuals + convex collision meshes
+    mesh_options = config.export.mesh_options if config and config.export else None
 
     client = Client(env=env_path, base_url=base_url) if base_url else Client(env=env_path)
     cad = CAD.from_url(DOCUMENT_URL, client=client, max_depth=max_depth)
@@ -45,6 +47,7 @@ def main() -> None:
         export_path,
         download_assets=download_assets,
         mesh_dir=mesh_dir,
+        mesh_options=mesh_options,
         position=(0, 0, 0),
         add_ground_plane=True,
     )

@@ -7,6 +7,8 @@ Dataclass:
 """
 
 import asyncio
+import os
+import shutil
 from typing import TYPE_CHECKING, Optional, Union
 
 import networkx as nx
@@ -29,6 +31,7 @@ from onshape_robotics_toolkit.config import (
 )
 from onshape_robotics_toolkit.connect import Asset, Client
 from onshape_robotics_toolkit.graph import KinematicGraph
+from onshape_robotics_toolkit.mesh import MeshOptions, process_meshes
 from onshape_robotics_toolkit.models.assembly import (
     MatedCS,
     MateFeatureData,
@@ -234,11 +237,13 @@ def get_robot_link(
                 izz=_inertia[2, 2],
             ),
         ),
-        collision=CollisionLink(
-            name=f"{name}_collision",
-            origin=_origin,
-            geometry=MeshGeometry(_mesh_path),
-        ),
+        collision=[
+            CollisionLink(
+                name=f"{name}_collision",
+                origin=_origin,
+                geometry=MeshGeometry(_mesh_path),
+            )
+        ],
     )
 
     # Convert to matrix for compatibility with downstream code
@@ -723,12 +728,14 @@ class Robot(nx.DiGraph):
         for root in root_nodes:
             print_tree(root)
 
-    async def _download_assets(self, mesh_dir: Optional[str] = None) -> None:
+    async def _download_assets(self, mesh_dir: Optional[str] = None, keep_source: bool = False) -> None:
         """Asynchronously download the assets.
 
         Args:
             mesh_dir: Optional custom directory for mesh files. If provided, updates all assets
                 to use this directory before downloading.
+            keep_source: Save each download to ``<mesh_dir>/source/`` instead of the visual mesh
+                path, so it can be post-processed locally by :meth:`_process_meshes`.
         """
         tasks = []
         for _node, data in self.nodes(data=True):
@@ -737,9 +744,44 @@ class Robot(nx.DiGraph):
                 # Update asset's mesh directory if specified
                 if mesh_dir is not None:
                     asset.mesh_dir = mesh_dir
-                tasks.append(asset.download())
+                tasks.append(asset.download(asset.source_path if keep_source else None))
         try:
             await asyncio.gather(*tasks)
             logger.info("All assets downloaded successfully.")
         except Exception as e:
             logger.error(f"Error downloading assets: {e}")
+
+    def _process_meshes(self, mesh_options: MeshOptions, mesh_dir: Optional[str] = None) -> None:
+        """Derive visual and collision meshes from already-downloaded meshes. Makes no API calls.
+
+        Each asset's full-resolution mesh is read from ``<mesh_dir>/source/``. If it is missing
+        but a visual mesh from an earlier export exists, that visual mesh is used as the source.
+
+        Args:
+            mesh_options: Local mesh processing options.
+            mesh_dir: Optional custom directory for mesh files.
+        """
+        assets_by_dir: dict[str, list[Asset]] = {}
+        for _node, data in self.nodes(data=True):
+            asset = data.get("asset")
+            if not asset or asset.is_from_file:
+                continue
+            if mesh_dir is not None:
+                asset.mesh_dir = mesh_dir
+            asset.collision_paths = []
+
+            if not os.path.exists(asset.source_path):
+                if not os.path.exists(asset.absolute_path):
+                    logger.warning(f"No downloaded mesh found for {asset.file_name}, skipping mesh processing")
+                    continue
+                os.makedirs(os.path.dirname(asset.source_path), exist_ok=True)
+                shutil.copyfile(asset.absolute_path, asset.source_path)
+            assets_by_dir.setdefault(os.path.dirname(asset.absolute_path), []).append(asset)
+
+        for directory, assets in assets_by_dir.items():
+            jobs = [(os.path.splitext(a.file_name)[0], a.source_path, a.absolute_path) for a in assets]
+            results = process_meshes(jobs, directory, mesh_options)
+            for asset, (name, source_path, visual_path) in zip(assets, jobs):
+                if not os.path.exists(visual_path):
+                    shutil.copyfile(source_path, visual_path)
+                asset.collision_paths = results.get(name, [])
