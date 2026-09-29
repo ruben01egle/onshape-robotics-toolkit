@@ -30,8 +30,10 @@ from onshape_robotics_toolkit.config import (
     record_session,
     record_variable_update,
     resolve_mate_dynamics_limits,
+    resolve_mate_limits,
     resolve_part_name,
     save_active_session,
+    update_mate_limits,
 )
 
 
@@ -177,7 +179,25 @@ def test_mate_effort_velocity_round_trip(tmp_path: Path) -> None:
     assert resolve_mate_dynamics_limits("revolute_1") == (150.0, 2.0)
     assert resolve_mate_dynamics_limits("unknown") == (None, None)
 
-    # API position limits replace entry.limits but must keep user effort/velocity
+    # API position limits fill the empty entry.limits but must keep user effort/velocity
     record_mate_name("revolute_1", "Revolute 1", {"min": -1.0, "max": 1.0})
+    assert resolve_mate_limits("revolute_1") == {"min": -1.0, "max": 1.0}
     assert resolve_mate_dynamics_limits("revolute_1") == (150.0, 2.0)
+    get_active_session().reset()
+
+
+def test_record_mate_name_keeps_config_limits(tmp_path: Path) -> None:
+    get_active_session().reset()
+
+    config = ORTConfig(
+        names=NameOverrides(mates={"revolute_1": NameOverrideEntry(name="joint1", limits={"min": -0.5, "max": 0.5})})
+    )
+    config_path = tmp_path / "limits.yaml"
+    config.save(config_path)
+    ORTConfig.load(config_path)
+
+    # Limits coming from Onshape must not replace user overrides from ORT.yaml
+    record_mate_name("revolute_1", "Revolute 1", {"min": -1.0, "max": 1.0})
+    update_mate_limits("revolute_1", {"min": -2.0, "max": 2.0})
+    assert resolve_mate_limits("revolute_1") == {"min": -0.5, "max": 0.5}
     get_active_session().reset()

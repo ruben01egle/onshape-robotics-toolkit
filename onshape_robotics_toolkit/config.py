@@ -528,7 +528,8 @@ def record_part_name(default_name: str, original_name: str | None) -> None:
 def record_mate_name(default_name: str, original_name: str | None, limits: dict[str, float] | None = None) -> None:
     session = get_active_session()
     entry = _ensure_name_entry(session.names.mates, default_name, original_name)
-    if limits is not None:
+    # Never replace limits already present (e.g. user overrides loaded from ORT.yaml)
+    if limits is not None and entry.limits is None:
         entry.limits = limits
 
 

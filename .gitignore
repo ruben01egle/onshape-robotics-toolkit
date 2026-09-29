@@ -213,3 +213,6 @@ playground
 
 *.USD
 *.pkl
+
+# Session config auto-saved on exit (also by test runs)
+ORT.yaml
