@@ -96,6 +96,41 @@ A few behaviors of the CAD → URDF export pipeline are worth calling out explic
   the wrong robot. `root_mate_name=None` (the default) preserves the original
   `use_user_defined_root` / centrality-based behavior unchanged.
 
+## Joint Overrides via ORT.yaml
+
+Every run records the parts and mates it encountered in `ORT.yaml` (written on exit). Each
+mate gets an entry under `names.mates`, keyed by its sanitized Onshape mate name. Edit that
+entry to override how the joint is exported:
+
+```yaml
+names:
+  mates:
+    revolute_1:              # sanitized Onshape mate name (key, written automatically)
+      original: Revolute 1   # original Onshape name (informational)
+      name: joint1           # exported joint name
+      limits:                # position limits, overriding the Onshape mate limits
+        min: -3.14
+        max: 3.14
+      effort: 150.0          # <limit effort="..."/>  (N*m for revolute, N for prismatic)
+      velocity: 2.0          # <limit velocity="..."/> (rad/s for revolute, m/s for prismatic)
+```
+
+- All fields are optional. `effort` and `velocity` default to `1.0` when not set; Onshape
+  only provides position limits, so these are the only way to get real values into the URDF.
+- `limits` uses the same `min`/`max` convention as the Onshape mate (radians / meters); the
+  exporter applies the axis sign convention described above.
+- For a **BALL** mate, `effort` and `velocity` apply to all three generated `_x`/`_y`/`_z`
+  sub-joints.
+- The overrides only take effect if the config is loaded **before** the robot is built:
+
+  ```python
+  config = ORTConfig.load("ORT.yaml") if Path("ORT.yaml").exists() else None
+  # ... CAD.from_url(...) -> KinematicGraph.from_cad(...) -> Robot.from_graph(...)
+  ```
+
+  (see [examples/export/main.py](examples/export/main.py)). Values you add are kept when
+  `ORT.yaml` is re-saved at the end of the run.
+
 ## Lighter Visual Meshes and Convex Collision Meshes
 
 By default every link's `<visual>` and `<collision>` point at the same full-resolution STL

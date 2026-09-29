@@ -25,6 +25,7 @@ from loguru import logger
 
 from onshape_robotics_toolkit.config import (
     record_robot_config,
+    resolve_mate_dynamics_limits,
     resolve_mate_limits,
     resolve_mate_name,
     resolve_part_name,
@@ -68,6 +69,10 @@ from onshape_robotics_toolkit.parse import (
     PathKey,
 )
 from onshape_robotics_toolkit.utilities.helpers import get_sanitized_name, make_unique_name
+
+# Fallback <limit effort/velocity> when ORT.yaml sets none for a mate
+DEFAULT_JOINT_EFFORT = 1.0
+DEFAULT_JOINT_VELOCITY = 1.0
 
 
 def set_joint_from_xml(element: ET._Element) -> BaseJoint | None:
@@ -313,6 +318,14 @@ def get_robot_joint(
     parent_link_name = resolve_part_name(str(parent_key))
     child_link_name = resolve_part_name(str(child_key))
 
+    config_effort, config_velocity = resolve_mate_dynamics_limits(base_name)
+    joint_effort = config_effort if config_effort is not None else DEFAULT_JOINT_EFFORT
+    joint_velocity = config_velocity if config_velocity is not None else DEFAULT_JOINT_VELOCITY
+    if config_effort is not None or config_velocity is not None:
+        logger.debug(
+            f"Using config effort/velocity for mate '{mate.name}': effort={joint_effort}, velocity={joint_velocity}"
+        )
+
     if mate.mateType == MateType.REVOLUTE:
         # Extract limits with priority order:
         # 1. config limits (user overrides)
@@ -326,8 +339,8 @@ def get_robot_joint(
         config_limits = resolve_mate_limits(base_name)
         if config_limits is not None and "min" in config_limits and "max" in config_limits:
             revolute_limits = JointLimits(
-                effort=1.0,
-                velocity=1.0,
+                effort=joint_effort,
+                velocity=joint_velocity,
                 lower=-config_limits["max"],
                 upper=-config_limits["min"],
             )
@@ -335,8 +348,8 @@ def get_robot_joint(
         elif mate.limits is not None and "min" in mate.limits and "max" in mate.limits:
             # Fallback to API limits when no override is provided
             revolute_limits = JointLimits(
-                effort=1.0,
-                velocity=1.0,
+                effort=joint_effort,
+                velocity=joint_velocity,
                 lower=-mate.limits["max"],
                 upper=-mate.limits["min"],
             )
@@ -344,8 +357,8 @@ def get_robot_joint(
 
         if revolute_limits is None:
             revolute_limits = JointLimits(
-                effort=1.0,
-                velocity=1.0,
+                effort=joint_effort,
+                velocity=joint_velocity,
                 lower=-2 * np.pi,
                 upper=2 * np.pi,
             )
@@ -413,8 +426,8 @@ def get_robot_joint(
             child=child_link_name,
             origin=origin,
             limits=JointLimits(
-                effort=1.0,
-                velocity=1.0,
+                effort=joint_effort,
+                velocity=joint_velocity,
                 lower=prismatic_lower,
                 upper=prismatic_upper,
             ),
@@ -459,8 +472,8 @@ def get_robot_joint(
             child=str(dummy_x_key),
             origin=origin,
             limits=JointLimits(
-                effort=1.0,
-                velocity=1.0,
+                effort=joint_effort,
+                velocity=joint_velocity,
                 lower=-2 * np.pi,
                 upper=2 * np.pi,
             ),
@@ -474,8 +487,8 @@ def get_robot_joint(
             child=str(dummy_y_key),
             origin=Origin.zero_origin(),
             limits=JointLimits(
-                effort=1.0,
-                velocity=1.0,
+                effort=joint_effort,
+                velocity=joint_velocity,
                 lower=-2 * np.pi,
                 upper=2 * np.pi,
             ),
@@ -489,8 +502,8 @@ def get_robot_joint(
             child=child_link_name,
             origin=Origin.zero_origin(),
             limits=JointLimits(
-                effort=1.0,
-                velocity=1.0,
+                effort=joint_effort,
+                velocity=joint_velocity,
                 lower=-2 * np.pi,
                 upper=2 * np.pi,
             ),

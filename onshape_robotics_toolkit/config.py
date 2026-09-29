@@ -67,6 +67,7 @@ __all__ = [
     "record_robot_config",
     "record_session",
     "record_variable_update",
+    "resolve_mate_dynamics_limits",
     "resolve_mate_limits",
     "resolve_mate_name",
     "resolve_part_name",
@@ -165,6 +166,8 @@ class NameOverrideEntry(BaseModel):
     limits: dict[str, float] | None = Field(
         default=None, description="Joint limits for mates {'min': lower_limit, 'max': upper_limit}."
     )
+    effort: float | None = Field(default=None, description="Joint effort limit for mates (N*m or N).")
+    velocity: float | None = Field(default=None, description="Joint velocity limit for mates (rad/s or m/s).")
 
 
 class NameOverrides(BaseModel):
@@ -558,6 +561,14 @@ def resolve_mate_limits(default_name: str) -> dict[str, float] | None:
     if entry is None:
         return None
     return entry.limits
+
+
+def resolve_mate_dynamics_limits(default_name: str) -> tuple[float | None, float | None]:
+    """Retrieve (effort, velocity) limits for a mate from the active session config."""
+    entry = get_active_session().names.mates.get(default_name)
+    if entry is None:
+        return None, None
+    return entry.effort, entry.velocity
 
 
 def _auto_save_on_exit() -> None:

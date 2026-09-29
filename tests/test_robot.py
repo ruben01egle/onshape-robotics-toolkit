@@ -9,6 +9,7 @@ from typing import Any
 
 import numpy as np
 
+from onshape_robotics_toolkit.config import NameOverrideEntry, get_active_session
 from onshape_robotics_toolkit.graph import KinematicGraph
 from onshape_robotics_toolkit.models.assembly import MatedCS, MatedEntity, MateFeatureData, MateType
 from onshape_robotics_toolkit.models.joint import BaseJoint, FixedJoint, PrismaticJoint, RevoluteJoint
@@ -265,6 +266,35 @@ def test_joint_limits_are_set_correctly() -> None:
     assert prismatic_joint.limits is not None
     assert prismatic_joint.limits.effort == 1.0
     assert prismatic_joint.limits.velocity == 1.0
+
+
+def test_joint_effort_velocity_from_config() -> None:
+    """Test that effort/velocity set in the session config override the defaults."""
+    parent_key = PathKey(("parent",), ("parent",))
+    child_key = PathKey(("child",), ("child",))
+    used_names: set[str] = set()
+
+    session = get_active_session()
+    session.reset()
+    session.names.mates["revolute"] = NameOverrideEntry(name="revolute", effort=150.0, velocity=2.5)
+    session.names.mates["ball"] = NameOverrideEntry(name="ball", velocity=0.5)
+    try:
+        revolute_mate = _make_mate("revolute", MateType.REVOLUTE, ["parent"], ["child"])
+        joints, _ = get_robot_joint(parent_key, child_key, revolute_mate, IDENTITY_TF, used_names)
+        limits = joints[(parent_key, child_key)].limits
+        assert limits is not None
+        assert limits.effort == 150.0
+        assert limits.velocity == 2.5
+
+        # Only velocity set: effort falls back to the default, all ball sub-joints share it
+        ball_mate = _make_mate("ball", MateType.BALL, ["parent"], ["child"])
+        joints, _ = get_robot_joint(parent_key, child_key, ball_mate, IDENTITY_TF, used_names)
+        for joint in joints.values():
+            assert joint.limits is not None
+            assert joint.limits.effort == 1.0
+            assert joint.limits.velocity == 0.5
+    finally:
+        session.reset()
 
 
 def test_joint_naming_uniqueness() -> None:

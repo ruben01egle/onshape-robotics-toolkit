@@ -29,6 +29,7 @@ from onshape_robotics_toolkit.config import (
     record_robot_config,
     record_session,
     record_variable_update,
+    resolve_mate_dynamics_limits,
     resolve_part_name,
     save_active_session,
 )
@@ -156,4 +157,27 @@ def test_global_session_records_without_context(tmp_path: Path) -> None:
     assert loaded.cad and loaded.cad.max_depth == 1
     assert resolve_part_name("body_1") == "body_1"
     assert get_active_session().auto_save_path == save_path
+    get_active_session().reset()
+
+
+def test_mate_effort_velocity_round_trip(tmp_path: Path) -> None:
+    get_active_session().reset()
+
+    config = ORTConfig(
+        names=NameOverrides(
+            mates={"revolute_1": NameOverrideEntry(original="Revolute 1", name="joint1", effort=150.0, velocity=2.0)}
+        )
+    )
+    config_path = tmp_path / "limits.yaml"
+    config.save(config_path)
+
+    loaded = ORTConfig.load(config_path)
+    assert loaded.names.mates["revolute_1"].effort == 150.0
+    assert loaded.names.mates["revolute_1"].velocity == 2.0
+    assert resolve_mate_dynamics_limits("revolute_1") == (150.0, 2.0)
+    assert resolve_mate_dynamics_limits("unknown") == (None, None)
+
+    # API position limits replace entry.limits but must keep user effort/velocity
+    record_mate_name("revolute_1", "Revolute 1", {"min": -1.0, "max": 1.0})
+    assert resolve_mate_dynamics_limits("revolute_1") == (150.0, 2.0)
     get_active_session().reset()
