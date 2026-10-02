@@ -30,7 +30,7 @@ from onshape_robotics_toolkit.formats.base import RobotDeserializer, RobotSerial
 from onshape_robotics_toolkit.formats.mesh_postprocess import process_urdf_meshes
 from onshape_robotics_toolkit.formats.mjcf import MJCFConfig, MJCFSerializer, load_element
 from onshape_robotics_toolkit.formats.urdf import URDFSerializer
-from onshape_robotics_toolkit.formats.xacro import convert_urdf_to_xacro
+from onshape_robotics_toolkit.formats.xacro import convert_tool_urdf_to_xacro, convert_urdf_to_xacro
 
 __all__ = [
     "MJCFConfig",
@@ -38,6 +38,7 @@ __all__ = [
     "RobotDeserializer",
     "RobotSerializer",
     "URDFSerializer",
+    "convert_tool_urdf_to_xacro",
     "convert_urdf_to_xacro",
     "load_element",
     "process_urdf_meshes",

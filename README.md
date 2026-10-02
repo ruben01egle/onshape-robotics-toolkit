@@ -211,6 +211,77 @@ process_urdf_meshes(
 When shipping the meshes in a ROS package, `source/` (full-resolution copies) is not
 referenced by the URDF and can be left out of the install / version control.
 
+## Xacro Export: Arm + Exchangeable Tools
+
+`onshape_robotics_toolkit.formats.xacro` turns an exported URDF into a xacro macro for a ROS 2
+description package. The arm and each end-effector tool are exported from **separate Onshape
+assemblies** and converted with two functions, so tools can be swapped without re-exporting the arm.
+
+**Arm.** `convert_urdf_to_xacro` wraps all links/joints in `<xacro:macro name="<robot_name>_geometry">`,
+rewrites mesh paths to `package://<package_name>/meshes/...` and appends a fixed `flange` link
+(joint `flange_joint`) on the tip link. It does **not** emit a `tcp`; the tool provides it.
+`tip_link` defaults to the single leaf link; an unknown `tip_link` raises `ValueError`.
+
+```python
+from onshape_robotics_toolkit.connect import Client
+from onshape_robotics_toolkit.formats import URDFSerializer, convert_urdf_to_xacro
+from onshape_robotics_toolkit.graph import KinematicGraph
+from onshape_robotics_toolkit.parse import CAD
+from onshape_robotics_toolkit.robot import Robot
+
+client = Client(env=".env")
+cad = CAD.from_url(ARM_URL, client=client, max_depth=2)
+graph = KinematicGraph.from_cad(cad, root_mate_name="root_mate")
+robot = Robot.from_graph(kinematic_graph=graph, client=client, name="robotarm")
+URDFSerializer().save(robot, "output/arm/robotarm.urdf", download_assets=True, mesh_dir="output/arm/meshes")
+
+convert_urdf_to_xacro(
+    "output/arm/robotarm.urdf",
+    "output/arm/robotarm_geometry.xacro",
+    package_name="robotarm_description",
+    mesh_dir="output/arm/meshes",
+    tip_link="Stage6_1",
+    flange_xyz=(0.0, 0.0, 0.148),
+)
+```
+
+**Tool.** Each tool is its own Onshape assembly, exported the same way: `root_mate_name`
+anchors the part that mounts on the flange, which becomes the root link.
+`convert_tool_urdf_to_xacro` then writes `<xacro:macro name="tool" params="parent">`. Every tool
+file has the same interface, so the consumer can pick one with a xacro arg and call
+`<xacro:tool parent="flange"/>`:
+
+- every link/joint/visual/collision/material name is prefixed with `link_prefix`
+  (default `"<tool_name>_"`), and so is every reference to them,
+- `<link_prefix>attach_joint` (fixed) attaches the tool's root link to `${parent}` at
+  `attach_xyz`/`attach_rpy`,
+- an unprefixed `tcp` link with a fixed `tcp_joint` sits on `tcp_parent_link` (default: the
+  root link) at `tcp_xyz`/`tcp_rpy`,
+- meshes are referenced as `package://<package_name>/meshes/tools/<tool_name>/...` and moved on
+  disk to `<mesh_dir>/tools/<tool_name>/` (keeping `collision/` and `source/`), so the
+  contents of `mesh_dir` can be copied 1:1 into the package's `meshes/`,
+- inertials are copied unchanged. Non-fixed joints are kept, with a warning.
+
+```python
+from onshape_robotics_toolkit.formats import convert_tool_urdf_to_xacro
+
+cad = CAD.from_url(GRIPPER_URL, client=client, max_depth=2)
+graph = KinematicGraph.from_cad(cad, root_mate_name="root_mate")
+robot = Robot.from_graph(kinematic_graph=graph, client=client, name="gripper_v1")
+URDFSerializer().save(robot, "output/gripper_v1/gripper_v1.urdf", download_assets=True,
+                      mesh_dir="output/gripper_v1/meshes")
+
+convert_tool_urdf_to_xacro(
+    "output/gripper_v1/gripper_v1.urdf",
+    "output/gripper_v1/gripper_v1.xacro",
+    package_name="robotarm_description",
+    mesh_dir="output/gripper_v1/meshes",   # afterwards contains tools/gripper_v1/...
+    tool_name="gripper_v1",
+    attach_xyz=(0.0, 0.0, 0.0),
+    tcp_xyz=(0.0, 0.0, 0.12),
+)
+```
+
 ## Using This Fork From Another Repo
 
 This fork (`ruben01egle/onshape-robotics-toolkit`) carries fixes and features not yet

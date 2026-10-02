@@ -13,6 +13,8 @@
 * add `uniform_link_color` option to `Robot.from_graph()` (default gray `(0.5, 0.5, 0.5, 1.0)`) instead of a random color per link; pass `None` to restore the old random-per-part behavior
 * add `root_mate_name` parameter to `KinematicGraph.from_cad()` to select the kinematic root via a named mate-to-origin, avoiding the need for a throwaway dummy fixed part
 * move `xacro_export.py`'s URDF-to-xacro conversion into the package as `onshape_robotics_toolkit.formats.xacro`
+* **breaking:** `convert_urdf_to_xacro` appends a fixed `flange` link/joint (`flange_xyz`, `flange_rpy`) instead of `tcp` (`tcp_offset_z` removed) and validates `tip_link`
+* add `convert_tool_urdf_to_xacro` for end-effector tools exported from their own assembly: `tool` macro with a `parent` param, prefixed names, an unprefixed `tcp` frame and meshes under `meshes/tools/<tool_name>/`
 
 ## [0.6.0](https://github.com/neurobionics/onshape-robotics-toolkit/compare/onshape-robotics-toolkit-v0.5.0...onshape-robotics-toolkit-v0.6.0) (2026-02-15)
 
