@@ -75,6 +75,24 @@ DEFAULT_JOINT_EFFORT = 1.0
 DEFAULT_JOINT_VELOCITY = 1.0
 
 
+def _is_complete_stl(path: str) -> bool:
+    """Whether ``path`` is a non-empty STL file that was written completely (not truncated)."""
+    try:
+        size = os.path.getsize(path)
+        with open(path, "rb") as f:
+            header = f.read(84)
+            f.seek(max(0, size - 256))
+            tail = f.read()
+    except OSError:
+        return False
+    if size < 84:
+        return False
+    num_triangles = int.from_bytes(header[80:84], "little")
+    if num_triangles > 0 and size == 84 + 50 * num_triangles:
+        return True  # binary STL
+    return header.startswith(b"solid") and b"endsolid" in tail  # ASCII STL
+
+
 def set_joint_from_xml(element: ET._Element) -> BaseJoint | None:
     """
     Set the joint type from an XML element.
@@ -187,14 +205,10 @@ def get_robot_link(
         # Part from a specific version
         wtype = WorkspaceType.V.value
         mvwid = part.documentVersion
-    elif part.isRigidAssembly:
-        # Rigid assembly - use workspace type with its workspace ID
-        # The assembly STL API requires workspace type and workspace ID
+    elif part.isRigidAssembly and part.rigidAssemblyWorkspaceId is not None:
+        # Rigid assembly in the root document - use the root's workspace
         wtype = WorkspaceType.W.value
-        if part.rigidAssemblyWorkspaceId is not None:
-            mvwid = part.rigidAssemblyWorkspaceId
-        else:
-            logger.error("Rigid part is missing workspace ID")
+        mvwid = part.rigidAssemblyWorkspaceId
     else:
         # Regular part - use its documentMicroversion with microversion type
         wtype = WorkspaceType.M.value
@@ -580,6 +594,7 @@ class Robot(nx.DiGraph):
         name: str,
         fetch_mass_properties: bool = True,
         uniform_link_color: Optional[tuple[float, float, float, float]] = (0.5, 0.5, 0.5, 1.0),
+        allow_missing_mass: bool = False,
     ) -> "Robot":
         """
         Create a Robot from pre-built CAD and KinematicGraph objects.
@@ -596,9 +611,16 @@ class Robot(nx.DiGraph):
             uniform_link_color: RGBA color applied to every link's material. Defaults to a
                 uniform gray (0.5, 0.5, 0.5, 1.0). Pass None to restore the legacy behavior
                 of picking a random color per part from the `Colors` palette.
+            allow_missing_mass: With ``fetch_mass_properties``, a link whose mass properties could
+                not be fetched raises a ``ValueError`` (before any mesh is downloaded). Set this to
+                True to warn and use default inertia for such links instead.
 
         Returns:
             Robot: The generated robot model
+
+        Raises:
+            ValueError: If the kinematic graph is empty, or if mass properties are missing for a
+                link and ``allow_missing_mass`` is False.
 
         Example:
             >>> from onshape_robotics_toolkit.parse import CAD
@@ -621,7 +643,22 @@ class Robot(nx.DiGraph):
             )
 
         if fetch_mass_properties:
-            asyncio.run(kinematic_graph.cad.fetch_mass_properties_for_parts(client))
+            # Only links need mass properties; parts and nested assemblies inside a rigid
+            # assembly are already included in its mass properties
+            failures = asyncio.run(
+                kinematic_graph.cad.fetch_mass_properties_for_parts(client, keys=list(kinematic_graph.nodes))
+            )
+            missing = [key for key in kinematic_graph.nodes if kinematic_graph.nodes[key]["data"].MassProperty is None]
+            if missing:
+                details = "\n".join(f"  - {key}: {failures.get(key, 'not fetched')}" for key in missing)
+                message = (
+                    f"Mass properties missing for {len(missing)} of {len(kinematic_graph.nodes)} links:\n{details}"
+                )
+                if not allow_missing_mass:
+                    raise ValueError(
+                        f"{message}\nNo meshes were downloaded. Pass allow_missing_mass=True to use default inertia."
+                    )
+                logger.warning(message)
 
         # Generate robot structure from kinematic graph
         robot = cls(
@@ -741,7 +778,9 @@ class Robot(nx.DiGraph):
         for root in root_nodes:
             print_tree(root)
 
-    async def _download_assets(self, mesh_dir: Optional[str] = None, keep_source: bool = False) -> None:
+    async def _download_assets(
+        self, mesh_dir: Optional[str] = None, keep_source: bool = False, reuse_existing: bool = False
+    ) -> None:
         """Asynchronously download the assets.
 
         Args:
@@ -749,7 +788,14 @@ class Robot(nx.DiGraph):
                 to use this directory before downloading.
             keep_source: Save each download to ``<mesh_dir>/source/`` instead of the visual mesh
                 path, so it can be post-processed locally by :meth:`_process_meshes`.
+            reuse_existing: Skip assets whose target file already exists and is a complete STL
+                (see ``RobotSerializer.save(reuse_downloads=...)``).
+
+        Raises:
+            RuntimeError: If any download failed. The other downloads are still saved, so a rerun
+                with ``reuse_existing`` only downloads the failed ones.
         """
+        names = []
         tasks = []
         for _node, data in self.nodes(data=True):
             asset = data.get("asset")
@@ -757,12 +803,19 @@ class Robot(nx.DiGraph):
                 # Update asset's mesh directory if specified
                 if mesh_dir is not None:
                     asset.mesh_dir = mesh_dir
-                tasks.append(asset.download(asset.source_path if keep_source else None))
-        try:
-            await asyncio.gather(*tasks)
-            logger.info("All assets downloaded successfully.")
-        except Exception as e:
-            logger.error(f"Error downloading assets: {e}")
+                target = asset.source_path if keep_source else asset.absolute_path
+                if reuse_existing and _is_complete_stl(target):
+                    logger.info(f"Reusing previously downloaded mesh {target} (no API calls)")
+                    continue
+                names.append(asset.file_name)
+                tasks.append(asset.download(target))
+
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        failed = [(name, result) for name, result in zip(names, results) if isinstance(result, BaseException)]
+        if failed:
+            details = "\n".join(f"  - {name}: {error}" for name, error in failed)
+            raise RuntimeError(f"Failed to download {len(failed)} of {len(tasks)} mesh(es):\n{details}")
+        logger.info(f"All assets downloaded successfully ({len(tasks)} downloaded).")
 
     def _process_meshes(self, mesh_options: MeshOptions, mesh_dir: Optional[str] = None) -> None:
         """Derive visual and collision meshes from already-downloaded meshes. Makes no API calls.

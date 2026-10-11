@@ -7,6 +7,11 @@
 * fix mate-limit fetch discarding limits for an entire assembly when any feature has an unrecognized "explosion" featureType
 * fix revolute joint axis sign (was `0 0 -1`, now `0 0 1`) and apply the corresponding limit negate-and-swap already used by prismatic joints, so joint limits stay physically correct
 * snap floating-point noise in `<origin>` xyz/rpy values to exact `0` below a `1e-6` threshold, without touching inertia tensor or mass values
+* fix mass properties of rigid subassemblies from linked documents always failing (the root's workspace ID was paired with the linked document's ID); they are now requested by microversion
+* fetch occurrences and mass properties only for the outermost rigid assemblies, without document metadata (3 requests per rigid subassembly, nested ones included, before; 2 per outermost one now), and fetch mass properties only for kinematic graph nodes
+* **breaking:** `Robot.from_graph(fetch_mass_properties=True)` raises if a link has no mass properties, before any mesh download; pass `allow_missing_mass=True` for the old default-inertia fallback
+* failed mesh downloads now raise instead of being logged while the export continues
+* fix out-of-memory during `convex_decomposition`: links are processed by at most `min(2, cpu_count)` workers by default (each CoACD run takes ~2.5-3 GB), and the mesh cache is written after every finished link
 
 ### Features
 
@@ -14,6 +19,9 @@
 * add `root_mate_name` parameter to `KinematicGraph.from_cad()` to select the kinematic root via a named mate-to-origin, avoiding the need for a throwaway dummy fixed part
 * move `xacro_export.py`'s URDF-to-xacro conversion into the package as `onshape_robotics_toolkit.formats.xacro`
 * **breaking:** `convert_urdf_to_xacro` appends a fixed `flange` link/joint (`flange_xyz`, `flange_rpy`) instead of `tcp` (`tcp_offset_z` removed) and validates `tip_link`
+* add `MeshOptions.max_workers` and `MeshOptions.collision_max_faces` (opt-in decimation of the convex decomposition input)
+* add `reuse_downloads` to `RobotSerializer.save()` to skip downloading meshes that an earlier export already saved
+* poll STL translation jobs with backoff (each poll is an API call) and give up after 10 minutes
 * add `convert_tool_urdf_to_xacro` for end-effector tools exported from their own assembly: `tool` macro with a `parent` param, prefixed names, an unprefixed `tcp` frame and meshes under `meshes/tools/<tool_name>/`
 
 ## [0.6.0](https://github.com/neurobionics/onshape-robotics-toolkit/compare/onshape-robotics-toolkit-v0.5.0...onshape-robotics-toolkit-v0.6.0) (2026-02-15)

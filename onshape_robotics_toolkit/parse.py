@@ -6,6 +6,7 @@ subassemblies, instances, and mates, and generate a hierarchical representation 
 
 import asyncio
 from collections import deque
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Optional, Union
 
@@ -42,7 +43,7 @@ from onshape_robotics_toolkit.models.assembly import (
     RootAssembly,
     SubAssembly,
 )
-from onshape_robotics_toolkit.models.document import Document, WorkspaceType, parse_url
+from onshape_robotics_toolkit.models.document import BASE_URL, Document, WorkspaceType, generate_url, parse_url
 from onshape_robotics_toolkit.utilities.helpers import get_sanitized_name, parse_onshape_expression
 
 # Path and entity constants
@@ -550,6 +551,13 @@ class CAD:
             if part.rigidAssemblyToPartTF is None and not part.isRigidAssembly and not self.instances[key].suppressed
         )
 
+        # Rigid assemblies nested in another rigid assembly are part of the outer one's link:
+        # they need no occurrence, mass or mesh request of their own
+        outer_rigid_keys = [
+            key
+            for key, sub in self.subassemblies.items()
+            if sub.isRigid and not self.instances[key].suppressed and not self.is_nested_rigid_assembly(key)
+        ]
         num_rigid_subassemblies = sum(
             1 for key, sub in self.subassemblies.items() if sub.isRigid and not self.instances[key].suppressed
         )
@@ -557,12 +565,16 @@ class CAD:
             1 for key, sub in self.subassemblies.items() if not self.instances[key].suppressed
         )
 
-        # Each rigid subassembly needs get_root_assembly to fetch occurrence data
-        subassembly_calls = num_rigid_subassemblies
+        # Each outermost rigid subassembly needs get_root_assembly for its occurrences, plus one
+        # request for its mass properties (fetched together)
+        subassembly_calls = 2 * len(outer_rigid_keys)
 
         mass_property_calls = 0
         if fetch_mass_properties:
-            mass_property_calls = num_kinematic_parts + num_rigid_subassemblies
+            # Rigid assemblies whose mass did not come with the occurrences are fetched again
+            mass_property_calls = num_kinematic_parts + sum(
+                1 for key in outer_rigid_keys if self.subassemblies[key].MassProperty is None
+            )
 
         mate_property_calls = 0
         if fetch_mate_properties:
@@ -570,7 +582,9 @@ class CAD:
 
         mesh_download_calls = 0
         if download_meshes:
-            mesh_download_calls = num_kinematic_parts + num_rigid_subassemblies
+            # A part STL is one request; an assembly STL is a translation job: start, a few status
+            # polls and the download (roughly 6 requests, more for very large assemblies)
+            mesh_download_calls = num_kinematic_parts + 6 * len(outer_rigid_keys)
 
         total_calls = subassembly_calls + mass_property_calls + mesh_download_calls + mate_property_calls
 
@@ -1297,7 +1311,9 @@ class CAD:
                 rigid_root = self.get_rigid_assembly_root(pathkey)
                 if rigid_root is not None:
                     self.parts[pathkey].rigidAssemblyKey = rigid_root
-                    self.parts[pathkey].rigidAssemblyWorkspaceId = self.workspace_id
+                    self.parts[pathkey].rigidAssemblyWorkspaceId = self._rigid_assembly_workspace_id(
+                        self.instances[rigid_root].documentId
+                    )
 
                     # NOTE: Using the root occurrences of the rigid assembly directly from Onshape API
                     # instead of computing it from the root assembly's global occurrences because
@@ -1320,6 +1336,10 @@ class CAD:
                             continue
 
                         asyncio.run(self.fetch_occurrences_for_subassemblies(self._client))
+                        if self.subassemblies[rigid_root].RootOccurrences is None:
+                            raise ValueError(
+                                f"Could not fetch the occurrences of rigid assembly {rigid_root}; see the error above."
+                            )
 
                     part_pose_wrt_rigid_root = self.subassemblies[rigid_root].RootOccurrences[pathkey]  # type: ignore[index]
                     self.parts[pathkey].rigidAssemblyToPartTF = MatedCS.from_tf(tf=part_pose_wrt_rigid_root.tf)
@@ -1343,24 +1363,66 @@ class CAD:
                     documentVersion=subassembly_instance.documentVersion,
                     isRigidAssembly=True,
                     rigidAssemblyKey=None,  # Not applicable for rigid assembly itself
-                    rigidAssemblyWorkspaceId=self.workspace_id,
+                    rigidAssemblyWorkspaceId=self._rigid_assembly_workspace_id(subassembly_instance.documentId),
                     rigidAssemblyToPartTF=None,
                     worldToPartTF=MatedCS.from_tf(self.occurrences[key].tf),
-                    MassProperty=None,  # Populated later via mass property fetch
+                    # Fetched together with the root occurrences, if available; otherwise later
+                    MassProperty=subassembly.MassProperty,
                 )
 
         logger.info(f"Populated {len(self.parts)} parts from assembly")
 
-    async def fetch_mass_properties_for_parts(self, client: Client) -> None:
+    def _rigid_assembly_workspace_id(self, document_id: str) -> Optional[str]:
+        """
+        Workspace ID to use for a rigid assembly, or None if it lives in another (linked) document.
+
+        A workspace ID only exists inside its own document, so the root's workspace must never be
+        paired with the document ID of a linked subassembly.
+        """
+        return self.workspace_id if document_id == self.document_id else None
+
+    def is_nested_rigid_assembly(self, key: PathKey) -> bool:
+        """Whether ``key`` is a rigid assembly that sits inside another rigid assembly."""
+        rigid_root = self.get_rigid_assembly_root(key)
+        return rigid_root is not None and rigid_root != key
+
+    async def fetch_mass_properties_for_parts(
+        self, client: Client, keys: Optional[Iterable[PathKey]] = None
+    ) -> dict[PathKey, str]:
+        """
+        Fetch the mass properties of parts and rigid assemblies that don't have them yet.
+
+        Parts inside a rigid assembly and rigid assemblies nested in another rigid assembly are
+        skipped: the outermost rigid assembly's mass properties already include them.
+
+        Args:
+            client: Onshape API client
+            keys: Only fetch for these keys (e.g. the nodes of a kinematic graph). Defaults to all parts.
+
+        Returns:
+            Mapping from each key whose fetch failed to the error, including the request URL.
+        """
+        failures: dict[PathKey, str] = {}
+
         async def _fetch_mass_properties(key: PathKey, part: Part, client: Client) -> None:
+            # Microversion references work for parts and assemblies of the root document and of
+            # linked documents alike (unlike the root's workspace ID, which only exists in the root document)
+            wid = part.documentMicroversion if part.documentMicroversion else self.document_microversion
+            url = generate_url(
+                base_url=getattr(client, "_url", BASE_URL),
+                did=part.documentId,
+                wtype=WorkspaceType.M.value,
+                wid=wid,
+                eid=part.elementId,
+            )
             try:
                 if part.isRigidAssembly:
                     logger.debug(f"Fetching mass properties for rigid assembly: {key}")
                     part.MassProperty = await asyncio.to_thread(
                         client.get_assembly_mass_properties,
                         did=part.documentId,
-                        wtype=WorkspaceType.W.value,
-                        wid=part.rigidAssemblyWorkspaceId,  # type: ignore[arg-type]
+                        wtype=WorkspaceType.M.value,
+                        wid=wid,
                         eid=part.elementId,
                     )
                 else:
@@ -1369,15 +1431,21 @@ class CAD:
                         client.get_mass_property,
                         did=part.documentId,
                         wtype=WorkspaceType.M.value,
-                        wid=part.documentMicroversion if part.documentMicroversion else self.document_microversion,
+                        wid=wid,
                         eid=part.elementId,
                         partID=part.partId,
                     )
+                logger.info(f"Fetched mass properties for {key}")
             except Exception as e:
                 logger.error(f"Failed to fetch mass properties for part {key}: {e}")
+                failures[key] = f"{e} (requested: {url})"
 
         tasks = []
-        for key, part in self.parts.items():
+        for key in self.parts if keys is None else keys:
+            part = self.parts.get(key)
+            if part is None:
+                continue
+
             if part.bodyType == BodyType.SHEET.value:
                 continue  # skip surface bodies
 
@@ -1392,10 +1460,16 @@ class CAD:
                 # this part belongs to a rigid subassembly, skip fetching mass properties
                 continue
 
+            if part.isRigidAssembly and self.is_nested_rigid_assembly(key):
+                # included in the mass properties of the outermost rigid assembly
+                continue
+
             tasks.append(_fetch_mass_properties(key, part, client))
 
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+
+        return failures
 
     async def fetch_occurrences_for_subassemblies(self, client: Client) -> None:
         async def _fetch_rootassembly(key: PathKey, subassembly: SubAssembly, client: Client) -> None:
@@ -1407,9 +1481,22 @@ class CAD:
                     wtype=WorkspaceType.M.value,
                     wid=subassembly.documentMicroversion,
                     eid=subassembly.elementId,
-                    with_mass_properties=True,
+                    with_mass_properties=False,
                     log_response=False,
+                    with_meta_data=False,
                 )
+                # Same request as the mass fetch of the rigid assembly's link would make; doing it
+                # here saves a round trip. A failure only leaves the mass to be fetched (and reported) later.
+                try:
+                    subassembly.MassProperty = await asyncio.to_thread(
+                        client.get_assembly_mass_properties,
+                        did=subassembly.documentId,
+                        wtype=WorkspaceType.M.value,
+                        wid=subassembly.documentMicroversion,
+                        eid=subassembly.elementId,
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to fetch mass properties for rigid assembly {key}: {e}")
                 _subassembly_occurrences = _subassembly_data.occurrences
                 for occurrence in _subassembly_occurrences:
                     # NOTE: add sub-assembly key as prefix to get absolute path
@@ -1451,6 +1538,10 @@ class CAD:
 
             if not subassembly.isRigid:
                 # dont fetch root occurrences for flexible subassemblies
+                continue
+
+            if self.is_nested_rigid_assembly(key):
+                # only the outermost rigid assembly's occurrences are used; they include nested ones
                 continue
 
             tasks.append(_fetch_rootassembly(key, subassembly, client))

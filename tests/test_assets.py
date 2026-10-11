@@ -100,3 +100,37 @@ def test_asset_relative_path_respects_robot_file_dir(tmp_path, monkeypatch) -> N
 
     # Absolute path should still point to the correct location
     assert asset.absolute_path == os.path.join(str(mesh_dir), "part.stl")
+
+
+def test_assembly_stl_translation_polls_with_backoff(monkeypatch) -> None:
+    """Each status poll is an API call: polling must wait and back off instead of polling every second."""
+    import io
+    from types import SimpleNamespace
+
+    client = connect.Client(env="tests/test.env")
+    states = ["ACTIVE"] * 5 + ["DONE"]
+    calls: list[str] = []
+    sleeps: list[float] = []
+
+    def _request(method, path, *args, **kwargs):
+        calls.append(path)
+        if path.endswith("/translations"):
+            return SimpleNamespace(status_code=200, json=lambda: {"id": "job"})
+        if path.startswith("/api/translations/"):
+            state = states.pop(0)
+            return SimpleNamespace(
+                status_code=200, json=lambda: {"requestState": state, "resultExternalDataIds": ["fid"]}
+            )
+        return SimpleNamespace(status_code=200, content=b"stl-bytes")
+
+    monkeypatch.setattr(client, "request", _request)
+    monkeypatch.setattr(connect.time, "sleep", sleeps.append)
+
+    buffer = io.BytesIO()
+    assert client.download_assembly_stl("d" * 24, "v", "v" * 24, "e" * 24, buffer) is buffer
+
+    assert buffer.getvalue() == b"stl-bytes"
+    assert sum(path.startswith("/api/translations/") for path in calls) == 6
+    assert sleeps[0] >= 2.0
+    assert sleeps == sorted(sleeps)
+    assert max(sleeps) <= 8.0

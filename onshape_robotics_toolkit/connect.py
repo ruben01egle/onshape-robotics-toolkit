@@ -53,6 +53,7 @@ from onshape_robotics_toolkit.utilities.helpers import (
 CURRENT_DIR = os.getcwd()
 MESHES_DIR = "meshes"
 ONSHAPE_KEY_NAMES = ["ONSHAPE_ACCESS_KEY", "ONSHAPE_SECRET_KEY"]
+TRANSLATION_TIMEOUT_S = 600  # give up on an STL translation job after this long
 
 __all__ = ["HTTP", "Client"]
 
@@ -753,7 +754,16 @@ class Client:
                 return None
 
             status_path = f"/api/translations/{translation_id}"
+            # Every status poll is an API call: wait before polling and back off, since large
+            # assemblies take several seconds to translate
+            poll_delay = 2.0
+            deadline = time.monotonic() + TRANSLATION_TIMEOUT_S
             while True:
+                if time.monotonic() > deadline:
+                    logger.error(f"Translation job did not finish within {TRANSLATION_TIMEOUT_S} s.")
+                    return None
+                time.sleep(poll_delay)
+                poll_delay = min(poll_delay * 1.5, 8.0)
                 status_response = self.request(HTTP.GET, path=status_path)
                 if status_response.status_code != 200:
                     logger.error(f"Failed to get translation status: {status_response.text}")
@@ -768,7 +778,6 @@ class Client:
                 elif request_state == "FAILED":
                     logger.error("Translation job failed.")
                     return None
-                time.sleep(1)
 
             fid = status_info.get("resultExternalDataIds")[0]
             data_path = f"/api/documents/d/{did}/externaldata/{fid}"
@@ -1378,6 +1387,8 @@ class Asset:
                         buffer=buffer,
                     )
 
+                if buffer.tell() == 0:
+                    raise RuntimeError("Onshape returned no mesh data, see the errors above")  # noqa: TRY301
                 buffer.seek(0)
 
                 raw_mesh = stl.mesh.Mesh.from_file(None, fh=buffer)
@@ -1389,6 +1400,7 @@ class Asset:
                 logger.debug(f"Mesh file saved: {save_path}")
         except Exception as e:
             logger.error(f"Failed to download {self.file_name}: {e}")
+            raise
 
     def to_mjcf(self, root: Any) -> None:
         """

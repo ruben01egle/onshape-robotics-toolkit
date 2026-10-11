@@ -11,7 +11,7 @@ import json
 import os
 import shutil
 import threading
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import partial
 from typing import Any, Literal, Optional
 
@@ -59,6 +59,17 @@ class MeshOptions(BaseModel):
         collision_max_hulls: Maximum number of convex hulls per link (convex_decomposition).
         collision_hull_max_vertices: Maximum number of vertices per convex hull.
         collision_concavity: CoACD concavity threshold; lower is tighter but yields more hulls.
+        collision_max_faces: Decimate the mesh to about this many triangles before the convex
+            decomposition (CAD meshes made of many open bodies may stay somewhat above it).
+            ``None`` (default) decomposes the full-resolution mesh. This mostly does not save
+            memory: CoACD remeshes non-watertight input (typical for CAD exports) at a fixed
+            resolution first, so its memory hardly depends on the input size (measured ~2.5-3 GB
+            per run for 100k-760k triangle links, with or without decimation), while decimating
+            makes the hulls cover the part slightly less well. Not applied to ``"convex_hull"``.
+        max_workers: Number of links processed in parallel. Defaults to ``min(2, cpu_count)`` for
+            ``"convex_decomposition"``, since each CoACD run takes ~2.5-3 GB of memory and already
+            uses several cores, and to the CPU count otherwise. Changing it does not invalidate
+            the mesh cache.
     """
 
     visual_max_faces: Optional[int] = Field(default=None, gt=0)
@@ -66,6 +77,15 @@ class MeshOptions(BaseModel):
     collision_max_hulls: int = Field(default=16, gt=0)
     collision_hull_max_vertices: int = Field(default=64, ge=4)
     collision_concavity: float = Field(default=0.05, gt=0)
+    collision_max_faces: Optional[int] = Field(default=None, gt=0)
+    max_workers: Optional[int] = Field(default=None, gt=0)
+
+    def resolved_max_workers(self) -> int:
+        """Number of worker threads to use for :func:`process_meshes`."""
+        if self.max_workers is not None:
+            return self.max_workers
+        cpu_count = os.cpu_count() or 1
+        return min(2, cpu_count) if self.collision_mode == "convex_decomposition" else cpu_count
 
 
 def simplify_mesh(mesh: Any, max_faces: int) -> Any:
@@ -184,8 +204,10 @@ def process_link_mesh(
 
     mesh: Any = trimesh.load(source_path, file_type="stl", force="mesh")
 
+    visual = mesh
     if options.visual_max_faces is not None and len(mesh.faces) > options.visual_max_faces:
-        simplify_mesh(mesh, options.visual_max_faces).export(visual_path, file_type="stl")
+        visual = simplify_mesh(mesh, options.visual_max_faces)
+        visual.export(visual_path, file_type="stl")
     elif os.path.abspath(source_path) != os.path.abspath(visual_path):
         shutil.copyfile(source_path, visual_path)
 
@@ -195,16 +217,24 @@ def process_link_mesh(
     if options.collision_mode == "mesh" or len(mesh.faces) == 0:
         return []
 
+    collision_input = mesh
+    if options.collision_mode == "convex_decomposition" and options.collision_max_faces is not None:
+        # Decimate from the (already smaller) visual mesh when it is still detailed enough
+        base = visual if len(visual.faces) >= options.collision_max_faces else mesh
+        collision_input = simplify_mesh(base, options.collision_max_faces)
+    # Keep only the mesh the collision step needs while it runs (the full-resolution one can be large)
+    del mesh, visual
+
     try:
         if options.collision_mode == "convex_decomposition":
             parts = convex_decomposition(
-                mesh,
+                collision_input,
                 max_hulls=options.collision_max_hulls,
                 max_vertices=options.collision_hull_max_vertices,
                 concavity=options.collision_concavity,
             )
         else:
-            parts = [convex_hull(mesh, options.collision_hull_max_vertices)]
+            parts = [convex_hull(collision_input, options.collision_hull_max_vertices)]
     except Exception as e:
         logger.warning(f"Collision mesh generation failed for {name}, falling back to the visual mesh: {e}")
         return []
@@ -234,8 +264,17 @@ def _cache_key(source_path: str, options: MeshOptions) -> str:
     with open(source_path, "rb") as f:
         for chunk in iter(lambda: f.read(1 << 20), b""):
             digest.update(chunk)
-    digest.update(options.model_dump_json().encode())
+    # Worker count doesn't change the result
+    digest.update(options.model_dump_json(exclude={"max_workers"}).encode())
     return digest.hexdigest()
+
+
+def _write_cache(cache_path: str, cache: dict[str, Any]) -> None:
+    """Write the mesh cache atomically, so a crash mid-write can't leave a corrupt file."""
+    tmp_path = f"{cache_path}.tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(cache, f, indent=2)
+    os.replace(tmp_path, cache_path)
 
 
 def process_meshes(
@@ -257,7 +296,7 @@ def process_meshes(
         mesh_dir: Mesh directory; collision meshes go to ``<mesh_dir>/collision`` and the
             cache to ``<mesh_dir>/.mesh_cache.json``
         options: Processing options
-        max_workers: Worker threads (defaults to the CPU count)
+        max_workers: Worker threads; overrides ``options.max_workers`` (see :class:`MeshOptions`)
 
     Returns:
         Mapping from link name to the absolute paths of its collision meshes.
@@ -299,29 +338,34 @@ def process_meshes(
         pending.append((name, source_path, visual_path, key))
 
     if pending:
-        logger.info(f"Processing {len(pending)} mesh(es) locally ({options.collision_mode})")
-        with ThreadPoolExecutor(max_workers=max_workers or os.cpu_count()) as pool:
+        workers = max_workers or options.resolved_max_workers()
+        logger.info(f"Processing {len(pending)} mesh(es) locally ({options.collision_mode}, {workers} worker(s))")
+        with ThreadPoolExecutor(max_workers=workers) as pool:
             futures = {
-                name: (key, pool.submit(process_link_mesh, source_path, visual_path, collision_dir, name, options))
+                pool.submit(process_link_mesh, source_path, visual_path, collision_dir, name, options): (
+                    name,
+                    visual_path,
+                    key,
+                )
                 for name, source_path, visual_path, key in pending
             }
-            visual_paths = {name: visual_path for name, _, visual_path, _ in pending}
-            for name, (key, future) in futures.items():
+            # Record each link as soon as it finishes, so a crash keeps the finished ones cached
+            for future in as_completed(futures):
+                name, visual_path, key = futures[future]
                 try:
                     paths = future.result()
                 except Exception as e:
                     logger.error(f"Failed to process mesh {name}: {e}")
                     cache.pop(name, None)
-                    continue
-                results[name] = paths
-                cache[name] = {
-                    "key": key,
-                    "visual_size": os.path.getsize(visual_paths[name]),
-                    "collision": [os.path.basename(p) for p in paths],
-                }
-
-        with open(cache_path, "w", encoding="utf-8") as f:
-            json.dump(cache, f, indent=2)
+                else:
+                    results[name] = paths
+                    cache[name] = {
+                        "key": key,
+                        "visual_size": os.path.getsize(visual_path),
+                        "collision": [os.path.basename(p) for p in paths],
+                    }
+                    logger.info(f"Processed mesh {name}: {len(paths)} collision mesh(es)")
+                _write_cache(cache_path, cache)
 
     return results
 

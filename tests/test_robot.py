@@ -181,9 +181,15 @@ def test_fetch_mass_properties_populates_parts(cad_doc_depth_0: CAD) -> None:
         assert part.MassProperty is not None
         assert part.MassProperty.mass == MASS_RESPONSE.mass
 
-    for part in assembly_parts:
-        assert part.MassProperty is not None
-        assert part.MassProperty.mass == MASS_RESPONSE.mass
+    for key, part in cad_doc_depth_0.parts.items():
+        if not part.isRigidAssembly:
+            continue
+        if cad_doc_depth_0.is_nested_rigid_assembly(key):
+            # included in the outermost rigid assembly's mass properties
+            assert part.MassProperty is None
+        else:
+            assert part.MassProperty is not None
+            assert part.MassProperty.mass == MASS_RESPONSE.mass
 
     skipped_parts = [part for part in cad_doc_depth_0.parts.values() if part.rigidAssemblyToPartTF is not None]
     for part in skipped_parts:

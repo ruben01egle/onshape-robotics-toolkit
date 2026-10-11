@@ -52,6 +52,7 @@ class RobotSerializer(ABC):
         download_assets: bool = True,
         mesh_dir: Optional[str] = None,
         mesh_options: Optional["MeshOptions"] = None,
+        reuse_downloads: bool = False,
         **options: Any,
     ) -> None:
         """
@@ -71,6 +72,12 @@ class RobotSerializer(ABC):
             mesh_options: Optional local mesh post-processing (visual decimation, convex
                 collision meshes). Runs on the downloaded meshes and never calls the Onshape API,
                 so it also works with ``download_assets=False`` on meshes from an earlier export.
+            reuse_downloads: Skip downloading a mesh whose file from an earlier export already
+                exists (``<mesh_dir>/source/<name>.stl`` with ``mesh_options``, else
+                ``<mesh_dir>/<name>.stl``) and is a complete STL. Saves several API calls per link.
+                Off by default: a reused mesh does not pick up changes to the CAD, nor changes to
+                the link frames (the mesh is stored in the link frame, which follows the mates).
+                Delete the stale files, or turn this off, after changing the CAD or the mates.
             **options: Format-specific serialization options
 
         Examples:
@@ -102,7 +109,11 @@ class RobotSerializer(ABC):
             resolved_mesh_dir = os.path.join(str(file_parent), "meshes")
 
         if download_assets:
-            asyncio.run(robot._download_assets(resolved_mesh_dir, keep_source=mesh_options is not None))
+            asyncio.run(
+                robot._download_assets(
+                    resolved_mesh_dir, keep_source=mesh_options is not None, reuse_existing=reuse_downloads
+                )
+            )
 
         if mesh_options is not None:
             robot._process_meshes(mesh_options, resolved_mesh_dir)

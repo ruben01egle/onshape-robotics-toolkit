@@ -19,6 +19,7 @@ from onshape_robotics_toolkit.mesh import (
     MeshOptions,
     convex_decomposition,
     convex_hull,
+    process_link_mesh,
     process_meshes,
     simplify_mesh,
 )
@@ -258,3 +259,120 @@ def test_process_urdf_meshes_rewrites_existing_xacro(tmp_path) -> None:
     process_urdf_meshes(str(xacro), str(mesh_dir), MeshOptions(collision_mode="mesh"))
     link = next(link for link in ET.parse(str(xacro)).getroot().iter("link") if link.get("name") == "Base_1")  # noqa: S320
     assert [m.get("filename") for m in link.findall("collision/geometry/mesh")] == ["package://pkg/meshes/Base_1.stl"]
+
+
+def _capture_coacd_input(monkeypatch) -> list[int]:
+    """Replace CoACD with a stub that records the face count of its input and returns one box hull."""
+    coacd = pytest.importorskip("coacd")
+    face_counts: list[int] = []
+
+    def _run_coacd(mesh, **kwargs):
+        face_counts.append(len(mesh.indices))
+        box = trimesh.creation.box()
+        return [(box.vertices, box.faces)]
+
+    class _Mesh:
+        def __init__(self, vertices, indices):
+            self.vertices, self.indices = vertices, indices
+
+    monkeypatch.setattr(coacd, "run_coacd", _run_coacd)
+    monkeypatch.setattr(coacd, "Mesh", _Mesh)
+    return face_counts
+
+
+@pytest.mark.parametrize(("collision_max_faces", "expect_decimated"), [(2000, True), (None, False)])
+def test_convex_decomposition_input_is_decimated(tmp_path, monkeypatch, collision_max_faces, expect_decimated) -> None:
+    face_counts = _capture_coacd_input(monkeypatch)
+    dense = trimesh.creation.icosphere(subdivisions=6)  # 81920 faces
+    source = _write_stl(dense, tmp_path / "source.stl")
+    options = MeshOptions(
+        visual_max_faces=20_000, collision_mode="convex_decomposition", collision_max_faces=collision_max_faces
+    )
+
+    paths = process_link_mesh(source, str(tmp_path / "visual.stl"), str(tmp_path / "collision"), "link", options)
+
+    assert len(paths) == 1
+    if expect_decimated:
+        assert 0 < face_counts[0] <= 2000
+    else:
+        assert face_counts[0] == len(dense.faces)
+
+
+def test_mesh_options_default_workers_are_bounded_for_decomposition(monkeypatch) -> None:
+    monkeypatch.setattr(mesh_module.os, "cpu_count", lambda: 16)
+
+    assert MeshOptions(collision_mode="convex_decomposition").resolved_max_workers() == 2
+    assert MeshOptions(collision_mode="convex_hull").resolved_max_workers() == 16
+    assert MeshOptions(collision_mode="convex_decomposition", max_workers=3).resolved_max_workers() == 3
+
+
+def test_cache_key_ignores_worker_count_but_not_collision_faces(tmp_path) -> None:
+    source = _write_stl(trimesh.creation.box(), tmp_path / "box.stl")
+    key = mesh_module._cache_key(source, MeshOptions())
+
+    assert mesh_module._cache_key(source, MeshOptions(max_workers=1)) == key
+    assert mesh_module._cache_key(source, MeshOptions(collision_max_faces=1000)) != key
+
+
+def test_process_meshes_writes_cache_after_each_link(tmp_path, monkeypatch) -> None:
+    mesh_dir = tmp_path / "meshes"
+    (mesh_dir / "source").mkdir(parents=True)
+    jobs = [
+        (name, _write_stl(trimesh.creation.box(), mesh_dir / "source" / f"{name}.stl"), str(mesh_dir / f"{name}.stl"))
+        for name in ("a", "b", "c")
+    ]
+    snapshots: list[set[str]] = []
+    write_cache = mesh_module._write_cache
+
+    def _record(path, cache):
+        snapshots.append(set(cache))
+        write_cache(path, cache)
+
+    monkeypatch.setattr(mesh_module, "_write_cache", _record)
+
+    process_meshes(jobs, str(mesh_dir), MeshOptions(collision_mode="convex_hull"), max_workers=1)
+
+    assert [len(s) for s in snapshots] == [1, 2, 3]
+
+
+def _asset_robot(mesh_dir) -> tuple[Robot, Asset]:
+    asset = Asset(file_name="base.stl", client=Mock(), mesh_dir=str(mesh_dir), is_rigid_assembly=True)
+    robot = Robot(kinematic_graph=Mock(spec=KinematicGraph), name="test_robot")
+    robot.add_node("base", data=None, asset=asset, world_to_link_tf=np.eye(4))
+    return robot, asset
+
+
+@pytest.mark.parametrize("truncate", [False, True])
+def test_reuse_downloads_skips_complete_source_mesh(tmp_path, monkeypatch, truncate) -> None:
+    import asyncio
+
+    robot, asset = _asset_robot(tmp_path / "meshes")
+    os.makedirs(os.path.dirname(asset.source_path))
+    _write_stl(trimesh.creation.box(), asset.source_path)
+    if truncate:
+        with open(asset.source_path, "r+b") as f:
+            f.truncate(os.path.getsize(asset.source_path) - 10)
+    downloads: list[str] = []
+
+    async def _download(self, file_path=None):
+        downloads.append(file_path)
+
+    monkeypatch.setattr(Asset, "download", _download)
+
+    asyncio.run(robot._download_assets(str(tmp_path / "meshes"), keep_source=True, reuse_existing=True))
+
+    assert downloads == ([asset.source_path] if truncate else [])
+
+
+def test_download_failure_is_raised(tmp_path, monkeypatch) -> None:
+    import asyncio
+
+    robot, _ = _asset_robot(tmp_path / "meshes")
+
+    async def _download(self, file_path=None):
+        raise RuntimeError("translation failed")
+
+    monkeypatch.setattr(Asset, "download", _download)
+
+    with pytest.raises(RuntimeError, match=r"(?s)Failed to download 1 of 1 mesh\(es\).*base.stl: translation failed"):
+        asyncio.run(robot._download_assets(str(tmp_path / "meshes")))
