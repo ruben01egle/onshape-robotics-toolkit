@@ -68,8 +68,10 @@ A few behaviors of the CAD → URDF export pipeline are worth calling out explic
   legacy behavior of picking a random color per part from the built-in `Colors` palette.
 - **Joint axis convention.** Every revolute, prismatic, and ball-joint sub-joint is emitted
   with `<axis xyz="0 0 1"/>` (previously `0 0 -1`). Joint limits are computed consistently
-  relative to that `+Z` axis, so `<limit lower=".../" upper="..."/>` values already reflect
-  the real Onshape mate limits - no manual sign-flipping is needed downstream.
+  relative to that `+Z` axis: the Onshape mate's `min`/`max` become `lower`/`upper` as they
+  are, and are negated and swapped only when the mate's parent/child order had to be reversed
+  to follow the kinematic tree (its position is then measured the other way round). No
+  manual sign-flipping is needed downstream.
 - **Origin noise snapping.** `xyz`/`rpy` components of `<origin>` tags (and `<axis>` tags)
   that are smaller than `1e-6` in magnitude are snapped to exact `0`, cleaning up floating-point
   noise from matrix decomposition (e.g. `-4.3121451e-14`). This snapping deliberately does
@@ -98,9 +100,10 @@ A few behaviors of the CAD → URDF export pipeline are worth calling out explic
 
 ## Joint Overrides via ORT.yaml
 
-Every run records the parts and mates it encountered in `ORT.yaml` (written on exit). Each
-mate gets an entry under `names.mates`, keyed by its sanitized Onshape mate name. Edit that
-entry to override how the joint is exported:
+Every run records the parts and mates it encountered, and the settings it used, in
+`ORT.recorded.yaml` (written on exit, next to the exported robot file). Each mate gets an
+entry under `names.mates`, keyed by its sanitized Onshape mate name. To override how a joint
+is exported, put an entry for it in your own `ORT.yaml` and load that file:
 
 ```yaml
 names:
@@ -128,8 +131,12 @@ names:
   # ... CAD.from_url(...) -> KinematicGraph.from_cad(...) -> Robot.from_graph(...)
   ```
 
-  (see [examples/export/main.py](examples/export/main.py)). Values you add are kept when
-  `ORT.yaml` is re-saved at the end of the run.
+  (see [examples/export/main.py](examples/export/main.py)).
+- A loaded config is only read, never overwritten. The recording goes to `ORT.recorded.yaml`
+  (or beside the loaded file as `<name>.recorded.yaml` if auto-save was pointed at it).
+- Copy only the entries you want to override from the recording into `ORT.yaml`. The recording
+  also contains the mate limits read from Onshape; loaded back, they act as overrides, so later
+  limit changes in Onshape would be ignored.
 
 ## Lighter Visual Meshes and Convex Collision Meshes
 

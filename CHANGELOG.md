@@ -6,6 +6,9 @@
 
 * fix mate-limit fetch discarding limits for an entire assembly when any feature has an unrecognized "explosion" featureType
 * fix revolute joint axis sign (was `0 0 -1`, now `0 0 1`) and apply the corresponding limit negate-and-swap already used by prismatic joints, so joint limits stay physically correct
+* fix joint limits being negated and swapped for every mate: Onshape `min`/`max` are now kept as they are and only negated and swapped when the kinematic graph reversed the mate's entities (recorded as `MateFeatureData.entitiesReversed`); applies to revolute and prismatic/cylindrical joints and to ORT.yaml limit overrides alike
+* fix `root_mate_name` on a part inside a rigid subassembly ignoring the part's pose in that assembly (the root link frame was off by that pose, e.g. 86 mm below the origin)
+* **breaking:** the session config recorded during a run is saved on exit to `ORT.recorded.yaml` next to the exported robot file instead of `ORT.yaml`, and `ORTConfig.load()` no longer makes the loaded file the save target; a loaded config is never overwritten (its recorded mate limits would otherwise act as overrides on the next run)
 * snap floating-point noise in `<origin>` xyz/rpy values to exact `0` below a `1e-6` threshold, without touching inertia tensor or mass values
 * fix mass properties of rigid subassemblies from linked documents always failing (the root's workspace ID was paired with the linked document's ID); they are now requested by microversion
 * fetch occurrences and mass properties only for the outermost rigid assemblies, without document metadata (3 requests per rigid subassembly, nested ones included, before; 2 per outermost one now), and fetch mass properties only for kinematic graph nodes

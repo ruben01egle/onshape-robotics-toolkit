@@ -71,7 +71,9 @@ def test_toolkit_config_round_trip(tmp_path: Path) -> None:
 
     activate_config(loaded, reset=True)
     assert resolve_part_name("body") == "Base"
-    assert get_active_session().auto_save_path == config_path
+    # Loading only reads the file; it must not become the auto-save target
+    assert get_active_session().auto_save_path is None
+    assert config_path.resolve() in get_active_session().loaded_paths
 
 
 def test_record_session_accumulates_configuration(tmp_path: Path) -> None:
@@ -201,3 +203,37 @@ def test_record_mate_name_keeps_config_limits(tmp_path: Path) -> None:
     update_mate_limits("revolute_1", {"min": -2.0, "max": 2.0})
     assert resolve_mate_limits("revolute_1") == {"min": -0.5, "max": 0.5}
     get_active_session().reset()
+
+
+def test_auto_save_never_overwrites_loaded_config(tmp_path: Path, monkeypatch) -> None:
+    from onshape_robotics_toolkit import config as config_module
+
+    monkeypatch.chdir(tmp_path)
+    get_active_session().reset()
+    user_config = tmp_path / "ORT.yaml"
+    user_config.write_text("names:\n  mates:\n    revolute_1:\n      name: joint1\n", encoding="utf-8")
+    original = user_config.read_text(encoding="utf-8")
+
+    ORTConfig.load(user_config)
+    record_mate_name("revolute_1", "Revolute 1", {"min": -1.0, "max": 1.0})
+    record_export_config(file_path="output/robot.urdf", download_assets=True, mesh_dir=None)
+
+    # Default target: next to the exported robot, not the loaded file
+    assert config_module._auto_save_path(get_active_session()) == Path("output") / "ORT.recorded.yaml"
+
+    # Even when pointed at the loaded file explicitly, auto-save writes beside it
+    config_module.configure_auto_save(user_config)
+    redirected = config_module._auto_save_path(get_active_session())
+    assert redirected == tmp_path / "ORT.recorded.yaml"
+
+    get_active_session().save(redirected)
+    assert user_config.read_text(encoding="utf-8") == original
+    assert ORTConfig.load(redirected).names.mates["revolute_1"].limits == {"min": -1.0, "max": 1.0}
+    get_active_session().reset()
+
+
+def test_auto_save_default_without_export(tmp_path: Path) -> None:
+    from onshape_robotics_toolkit import config as config_module
+
+    get_active_session().reset()
+    assert config_module._auto_save_path(get_active_session()) == Path("ORT.recorded.yaml")

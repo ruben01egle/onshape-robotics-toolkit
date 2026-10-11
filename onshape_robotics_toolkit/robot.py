@@ -270,6 +270,21 @@ def get_robot_link(
     return link, world_to_link_matrix, asset
 
 
+def _joint_range(limits: dict[str, float], entities_reversed: bool) -> tuple[float, float]:
+    """
+    Convert Onshape mate limits (``min``/``max``, also the convention of ORT.yaml overrides)
+    to the URDF joint's ``(lower, upper)``.
+
+    The URDF joint moves the child about/along +Z of the parent's mate connector, which matches
+    how Onshape measures the mate's position when the mate's first entity is the parent. If
+    KinematicGraph reversed the entities to put the kinematic parent first, the position is
+    measured the other way round: negate and swap.
+    """
+    if entities_reversed:
+        return -limits["max"], -limits["min"]
+    return limits["min"], limits["max"]
+
+
 def get_robot_joint(
     parent_key: PathKey,
     child_key: PathKey,
@@ -348,25 +363,15 @@ def get_robot_joint(
         revolute_limits = None
         limit_source = None
 
-        # NOTE: negate-and-swap min/max, matching the convention already used for
-        # prismatic joints below, so limit signs stay consistent with the emitted axis.
         config_limits = resolve_mate_limits(base_name)
         if config_limits is not None and "min" in config_limits and "max" in config_limits:
-            revolute_limits = JointLimits(
-                effort=joint_effort,
-                velocity=joint_velocity,
-                lower=-config_limits["max"],
-                upper=-config_limits["min"],
-            )
+            lower, upper = _joint_range(config_limits, mate.entitiesReversed)
+            revolute_limits = JointLimits(effort=joint_effort, velocity=joint_velocity, lower=lower, upper=upper)
             limit_source = "config"
         elif mate.limits is not None and "min" in mate.limits and "max" in mate.limits:
             # Fallback to API limits when no override is provided
-            revolute_limits = JointLimits(
-                effort=joint_effort,
-                velocity=joint_velocity,
-                lower=-mate.limits["max"],
-                upper=-mate.limits["min"],
-            )
+            lower, upper = _joint_range(mate.limits, mate.entitiesReversed)
+            revolute_limits = JointLimits(effort=joint_effort, velocity=joint_velocity, lower=lower, upper=upper)
             limit_source = "API"
 
         if revolute_limits is None:
@@ -401,21 +406,16 @@ def get_robot_joint(
 
     elif mate.mateType == MateType.SLIDER or mate.mateType == MateType.CYLINDRICAL:
         # For prismatic joints, use fetched limits or defaults (in meters)
-        # NOTE: negate-and-swap min/max to keep limit signs consistent with the emitted axis.
         prismatic_lower: float | None = None
         prismatic_upper: float | None = None
         limit_source = None
 
         config_limits = resolve_mate_limits(base_name)
         if config_limits is not None and "min" in config_limits and "max" in config_limits:
-            prismatic_lower = -config_limits["max"]
-            prismatic_upper = -config_limits["min"]
+            prismatic_lower, prismatic_upper = _joint_range(config_limits, mate.entitiesReversed)
             limit_source = "config"
         elif mate.limits is not None and "min" in mate.limits and "max" in mate.limits:
-            # Swap and negate: Onshape's min becomes URDF's upper (negated)
-            # and Onshape's max becomes URDF's lower (negated)
-            prismatic_lower = -mate.limits["max"]
-            prismatic_upper = -mate.limits["min"]
+            prismatic_lower, prismatic_upper = _joint_range(mate.limits, mate.entitiesReversed)
             limit_source = "API"
 
         if prismatic_lower is None or prismatic_upper is None:

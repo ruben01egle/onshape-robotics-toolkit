@@ -1074,6 +1074,13 @@ class MateFeatureData(BaseModel):
     limits: Union[dict[str, float], None] = Field(
         None, description="Joint limits for the mate {'min': lower_limit, 'max': upper_limit}."
     )
+    entitiesReversed: bool = Field(
+        False,
+        description=(
+            "Set by KinematicGraph when matedEntities was reversed to make the kinematic parent come "
+            "first. The mate's position (and so its limits) is then measured the other way round."
+        ),
+    )
 
 
 class AssemblyFeature(BaseModel):

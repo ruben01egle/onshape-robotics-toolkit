@@ -16,13 +16,13 @@ DOCUMENT_URL = (
 MAX_DEPTH = 2
 EXPORT_PATH = Path("output/robot.urdf")
 MESH_DIR = "custom_meshes"
-CONFIG_OUTPUT = Path("ORT.yaml")
+CONFIG_INPUT = Path("ORT.yaml")  # optional overrides; only read (the run is recorded to ORT.recorded.yaml)
 
 
 def main() -> None:
     setup_default_logging(console_level="INFO", file_level="DEBUG", file_path="export.log")
 
-    config = ORTConfig.load(CONFIG_OUTPUT) if CONFIG_OUTPUT.exists() else None
+    config = ORTConfig.load(CONFIG_INPUT) if CONFIG_INPUT.exists() else None
 
     env_path = config.client.env if config and config.client and config.client.env is not None else ENV_PATH
     base_url = config.client.base_url if config and config.client else None

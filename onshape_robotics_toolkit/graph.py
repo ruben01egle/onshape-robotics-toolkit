@@ -142,12 +142,24 @@ def resolve_root_mate(cad: CAD, root_mate_name: str) -> tuple[PathKey, MateFeatu
     # NOTE: mirrors the rigid-assembly remap in KinematicGraph._remap_mates - if the resolved
     # part belongs to a rigid subassembly, the graph's nodes are keyed by the rigid assembly
     # root, not the individual part.
+    resolved_mate = copy.deepcopy(mate)
+    resolved_other_entity = copy.deepcopy(other_entity)
+    resolved_mate.matedEntities = [copy.deepcopy(origin_entity), resolved_other_entity]
+
     part = cad.parts.get(root_key)
     if part is not None and part.rigidAssemblyKey is not None:
         root_key = part.rigidAssemblyKey
-
-    resolved_mate = copy.deepcopy(mate)
-    resolved_mate.matedEntities = [origin_entity, other_entity]
+        # The link's mesh is in the rigid assembly's frame, so the mate connector must be too
+        # (part->mate becomes rigid_root->mate, as in KinematicGraph._remap_mates)
+        if part.rigidAssemblyToPartTF is None:
+            raise ValueError(
+                f"root_mate_name='{root_mate_name}' targets a part inside rigid assembly {root_key}, "
+                "but its pose in that assembly is unknown (CAD was built without a client?)."
+            )
+        resolved_other_entity.matedOccurrence = list(root_key.path)
+        resolved_other_entity.matedCS = MatedCS.from_tf(
+            part.rigidAssemblyToPartTF.to_tf @ resolved_other_entity.matedCS.to_tf
+        )
 
     return root_key, resolved_mate
 
@@ -494,6 +506,7 @@ class KinematicGraph(nx.DiGraph):
                 # the mate parent->child order has flipped
                 mate = copy.deepcopy(mates[(v, u)])
                 mate.matedEntities.reverse()
+                mate.entitiesReversed = not mate.entitiesReversed
                 # NOTE: we are mutating the mate data here, but
                 # preserving the BFS tree parent->child order
                 self.add_edge(

@@ -216,3 +216,4 @@ playground
 
 # Session config auto-saved on exit (also by test runs)
 ORT.yaml
+ORT.recorded.yaml

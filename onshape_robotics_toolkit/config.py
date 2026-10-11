@@ -251,11 +251,17 @@ class ORTConfig(BaseModel):
 
     @classmethod
     def load(cls, path: Path | str) -> ORTConfig:
+        """
+        Load a config and apply its overrides to the active session.
+
+        The file is only read: the configuration recorded during the run is saved on exit to a
+        separate file (see :func:`_auto_save_on_exit`), never over a loaded file.
+        """
         with Path(path).open("r", encoding="utf-8") as handle:
             data = yaml.safe_load(handle) or {}
         config = cls.model_validate(data)
-        configure_auto_save(path)
         activate_config(config, reset=True)
+        get_active_session().loaded_paths.add(Path(path).resolve())
         return config
 
 
@@ -274,6 +280,7 @@ class ORTSession:
         self.export: ExportConfig | None = None
         self.names: NameOverrides = NameOverrides()
         self.auto_save_path: Path | None = None
+        self.loaded_paths: set[Path] = set()  # config files read via ORTConfig.load; never auto-saved over
 
     def to_config(self) -> ORTConfig:
         return ORTConfig(
@@ -305,6 +312,7 @@ class ORTSession:
         self.export = None
         self.names = NameOverrides()
         self.auto_save_path = None
+        self.loaded_paths = set()
 
     def merge_from(self, other: ORTSession) -> None:
         for field in (
@@ -325,6 +333,7 @@ class ORTSession:
             self.names = other.names.copy()
         if other.auto_save_path is not None:
             self.auto_save_path = other.auto_save_path
+        self.loaded_paths |= other.loaded_paths
 
 
 _GLOBAL_SESSION = ORTSession()
@@ -378,10 +387,10 @@ def activate_config(config: ORTConfig, *, reset: bool = False) -> None:
     """Apply persisted configuration (currently name overrides) to the active session."""
 
     session = get_active_session()
-    previous_auto_path = session.auto_save_path
+    previous_auto_path, previous_loaded_paths = session.auto_save_path, session.loaded_paths
     if reset:
         session.reset()
-        session.auto_save_path = previous_auto_path
+        session.auto_save_path, session.loaded_paths = previous_auto_path, previous_loaded_paths
     session.names = config.names.copy()
 
 
@@ -572,18 +581,29 @@ def resolve_mate_dynamics_limits(default_name: str) -> tuple[float | None, float
     return entry.effort, entry.velocity
 
 
+RECORDED_CONFIG_FILE = "ORT.recorded.yaml"
+
+
+def _auto_save_path(session: ORTSession) -> Path:
+    """
+    Where the recorded session goes on exit: the configured path, else ``ORT.recorded.yaml`` next
+    to the exported robot file (or in the working directory). A file that was loaded as input is
+    never overwritten; the recording goes to ``<name>.recorded<suffix>`` beside it instead.
+    """
+    path = session.auto_save_path
+    if path is None:
+        export_file = session.export.file_path if session.export else None
+        path = Path(export_file).parent / RECORDED_CONFIG_FILE if export_file else Path(RECORDED_CONFIG_FILE)
+    if path.resolve() in session.loaded_paths:
+        redirected = path.with_name(f"{path.stem}.recorded{path.suffix}")
+        logger.warning(f"Not overwriting loaded config {path}; saving the recorded session to {redirected}")
+        path = redirected
+    return path
+
+
 def _auto_save_on_exit() -> None:
     session = _GLOBAL_SESSION
-
-    if session.auto_save_path is None:
-        configure_auto_save("ORT.yaml")
-
-    path = session.auto_save_path
-
-    if path is not None:
-        session.save(path)
-    else:
-        logger.warning("No path configured for automatic session saving; skipping.")
+    session.save(_auto_save_path(session))
 
 
 atexit.register(_auto_save_on_exit)
