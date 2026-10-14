@@ -67,6 +67,7 @@ __all__ = [
     "record_robot_config",
     "record_session",
     "record_variable_update",
+    "resolve_mate_armature",
     "resolve_mate_dynamics_limits",
     "resolve_mate_limits",
     "resolve_mate_name",
@@ -168,6 +169,9 @@ class NameOverrideEntry(BaseModel):
     )
     effort: float | None = Field(default=None, description="Joint effort limit for mates (N*m or N).")
     velocity: float | None = Field(default=None, description="Joint velocity limit for mates (rad/s or m/s).")
+    armature: float | None = Field(
+        default=None, description="Reflected drive inertia for mates (kg*m^2 or kg), exported as given."
+    )
 
 
 class NameOverrides(BaseModel):
@@ -579,6 +583,14 @@ def resolve_mate_dynamics_limits(default_name: str) -> tuple[float | None, float
     if entry is None:
         return None, None
     return entry.effort, entry.velocity
+
+
+def resolve_mate_armature(default_name: str) -> float | None:
+    """Retrieve the reflected drive inertia (armature) for a mate from the active session config."""
+    entry = get_active_session().names.mates.get(default_name)
+    if entry is None:
+        return None
+    return entry.armature
 
 
 RECORDED_CONFIG_FILE = "ORT.recorded.yaml"

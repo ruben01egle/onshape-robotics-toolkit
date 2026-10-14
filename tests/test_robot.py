@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from threading import Lock
 from typing import Any
 
+import lxml.etree as ET
 import numpy as np
 
 from onshape_robotics_toolkit.config import NameOverrideEntry, get_active_session
@@ -299,6 +300,51 @@ def test_joint_effort_velocity_from_config() -> None:
             assert joint.limits is not None
             assert joint.limits.effort == 1.0
             assert joint.limits.velocity == 0.5
+    finally:
+        session.reset()
+
+
+def test_joint_armature_from_config() -> None:
+    """Test that armature from the session config reaches the joint and its URDF/MJCF output."""
+    parent_key = PathKey(("parent",), ("parent",))
+    child_key = PathKey(("child",), ("child",))
+    used_names: set[str] = set()
+
+    session = get_active_session()
+    session.reset()
+    session.names.mates["revolute"] = NameOverrideEntry(name="revolute", armature=0.012)
+    session.names.mates["slider"] = NameOverrideEntry(name="slider", armature=1.5)
+    try:
+        revolute_mate = _make_mate("revolute", MateType.REVOLUTE, ["parent"], ["child"])
+        joints, _ = get_robot_joint(parent_key, child_key, revolute_mate, IDENTITY_TF, used_names)
+        revolute_joint = joints[(parent_key, child_key)]
+        assert isinstance(revolute_joint, RevoluteJoint)
+        assert revolute_joint.armature == 0.012
+
+        urdf = revolute_joint.to_xml()
+        assert urdf.find("armature").attrib["value"] == "0.012"
+        assert RevoluteJoint.from_xml(urdf).armature == 0.012
+
+        mjcf_root = ET.Element("body")
+        revolute_joint.to_mjcf(mjcf_root)
+        assert mjcf_root.find("joint").attrib["armature"] == "0.012"
+
+        slider_mate = _make_mate("slider", MateType.SLIDER, ["parent"], ["child"])
+        joints, _ = get_robot_joint(parent_key, child_key, slider_mate, IDENTITY_TF, used_names)
+        prismatic_joint = joints[(parent_key, child_key)]
+        assert isinstance(prismatic_joint, PrismaticJoint)
+        assert PrismaticJoint.from_xml(prismatic_joint.to_xml()).armature == 1.5
+
+        mjcf_root = ET.Element("body")
+        prismatic_joint.to_mjcf(mjcf_root)
+        assert mjcf_root.find("joint").attrib["armature"] == "1.5"
+
+        # No armature configured: nothing is emitted
+        plain_mate = _make_mate("plain", MateType.REVOLUTE, ["parent"], ["child"])
+        joints, _ = get_robot_joint(parent_key, child_key, plain_mate, IDENTITY_TF, used_names)
+        plain_joint = joints[(parent_key, child_key)]
+        assert plain_joint.armature is None
+        assert plain_joint.to_xml().find("armature") is None
     finally:
         session.reset()
 

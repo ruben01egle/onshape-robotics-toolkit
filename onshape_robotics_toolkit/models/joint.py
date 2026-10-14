@@ -36,6 +36,24 @@ from onshape_robotics_toolkit.models.link import Axis, Origin
 from onshape_robotics_toolkit.utilities import format_number
 
 
+def armature_to_xml(root: _Element, armature: float | None) -> None:
+    """
+    Append the reflected drive inertia as a custom ``<armature value="..."/>`` child of a URDF joint.
+
+    URDF has no standard field for this; standard parsers ignore the unknown element.
+    """
+    if armature is not None:
+        SubElement(root, "armature", value=format_number(armature))
+
+
+def armature_from_xml(element: _Element) -> float | None:
+    """Read the custom ``<armature value="..."/>`` child of a URDF joint, if present."""
+    armature_element = element.find("armature")
+    if armature_element is None:
+        return None
+    return float(armature_element.attrib["value"])
+
+
 class JointType(str, Enum):
     """
     Enumerates the possible joint types in Onshape
@@ -399,6 +417,7 @@ class RevoluteJoint(BaseJoint):
         axis (Axis): The axis of the joint.
         dynamics (JointDynamics): The dynamics of the joint.
         mimic (JointMimic): The mimic information for the joint.
+        armature (float): Reflected drive inertia (kg*m^2), exported as a custom URDF element.
 
     Methods:
         to_xml: Converts the revolute joint to an XML element.
@@ -430,6 +449,7 @@ class RevoluteJoint(BaseJoint):
     limits: JointLimits | None = None
     dynamics: JointDynamics | None = None
     mimic: JointMimic | None = None
+    armature: float | None = None
 
     def to_xml(self, root: Optional[_Element] = None) -> _Element:
         """
@@ -469,6 +489,7 @@ class RevoluteJoint(BaseJoint):
             self.dynamics.to_xml(joint)
         if self.mimic is not None:
             self.mimic.to_xml(joint)
+        armature_to_xml(joint, self.armature)
         return joint
 
     def to_mjcf(self, root: _Element) -> None:
@@ -489,6 +510,9 @@ class RevoluteJoint(BaseJoint):
         if self.dynamics:
             joint.set("damping", str(self.dynamics.damping))
             joint.set("frictionloss", str(self.dynamics.friction))
+
+        if self.armature is not None:
+            joint.set("armature", str(self.armature))
 
     @classmethod
     def from_xml(cls, element: _Element) -> "RevoluteJoint":
@@ -576,6 +600,7 @@ class RevoluteJoint(BaseJoint):
             limits=limits,
             dynamics=dynamics,
             mimic=mimic,
+            armature=armature_from_xml(element),
         )
 
     @property
@@ -723,6 +748,7 @@ class PrismaticJoint(BaseJoint):
         axis (Axis): The axis of the joint.
         dynamics (JointDynamics): The dynamics of the joint.
         mimic (JointMimic): The mimic information for the joint.
+        armature (float): Reflected drive inertia (kg), exported as a custom URDF element.
 
     Methods:
         to_xml: Converts the prismatic joint to an XML element.
@@ -754,6 +780,7 @@ class PrismaticJoint(BaseJoint):
     axis: Axis
     dynamics: JointDynamics | None = None
     mimic: JointMimic | None = None
+    armature: float | None = None
 
     def to_xml(self, root: Optional[_Element] = None) -> _Element:
         """
@@ -793,7 +820,22 @@ class PrismaticJoint(BaseJoint):
             self.dynamics.to_xml(joint)
         if self.mimic is not None:
             self.mimic.to_xml(joint)
+        armature_to_xml(joint, self.armature)
         return joint
+
+    def to_mjcf(self, root: _Element) -> None:
+        """
+        Converts the prismatic joint to an XML element and appends it to the given root element.
+
+        Args:
+            root: The root element to append the prismatic joint to.
+        """
+
+        joint: _Element = SubElement(root, "joint", name=self.name, type=MJCF_JOINT_MAP[JointType(self.joint_type)])
+        joint.set("pos", " ".join(map(str, self.origin.xyz)))
+
+        if self.armature is not None:
+            joint.set("armature", str(self.armature))
 
     @classmethod
     def from_xml(cls, element: _Element) -> "PrismaticJoint":
@@ -869,7 +911,7 @@ class PrismaticJoint(BaseJoint):
         mimic_element = element.find("mimic")
         mimic = JointMimic.from_xml(mimic_element) if mimic_element is not None else None
 
-        return cls(name, parent, child, origin, limits, axis, dynamics, mimic)
+        return cls(name, parent, child, origin, limits, axis, dynamics, mimic, armature_from_xml(element))
 
     @property
     def joint_type(self) -> str:

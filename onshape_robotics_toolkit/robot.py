@@ -25,6 +25,7 @@ from loguru import logger
 
 from onshape_robotics_toolkit.config import (
     record_robot_config,
+    resolve_mate_armature,
     resolve_mate_dynamics_limits,
     resolve_mate_limits,
     resolve_mate_name,
@@ -354,6 +355,8 @@ def get_robot_joint(
         logger.debug(
             f"Using config effort/velocity for mate '{mate.name}': effort={joint_effort}, velocity={joint_velocity}"
         )
+    # Reflected drive inertia is user-supplied only, never computed
+    joint_armature = resolve_mate_armature(base_name)
 
     if mate.mateType == MateType.REVOLUTE:
         # Extract limits with priority order:
@@ -397,6 +400,7 @@ def get_robot_joint(
             axis=Axis((0.0, 0.0, 1.0)),
             # dynamics=JointDynamics(damping=0.1, friction=0.1),
             mimic=mimic,
+            armature=joint_armature,
         )
 
     elif mate.mateType == MateType.FASTENED:
@@ -448,6 +452,7 @@ def get_robot_joint(
             axis=Axis((0.0, 0.0, 1.0)),
             # dynamics=JointDynamics(damping=0.1, friction=0.1),
             mimic=mimic,
+            armature=joint_armature,
         )
 
     elif mate.mateType == MateType.BALL:

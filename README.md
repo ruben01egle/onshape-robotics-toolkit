@@ -116,6 +116,7 @@ names:
         max: 3.14
       effort: 150.0          # <limit effort="..."/>  (N*m for revolute, N for prismatic)
       velocity: 2.0          # <limit velocity="..."/> (rad/s for revolute, m/s for prismatic)
+      armature: 0.012        # reflected drive inertia (kg*m^2 for revolute, kg for prismatic)
 ```
 
 - All fields are optional. `effort` and `velocity` default to `1.0` when not set; Onshape
@@ -124,6 +125,13 @@ names:
   exporter applies the axis sign convention described above.
 - For a **BALL** mate, `effort` and `velocity` apply to all three generated `_x`/`_y`/`_z`
   sub-joints.
+- `armature` is the reflected inertia of the drive (typically rotor inertia × gear ratio²). It
+  is never computed, only exported as given, and only for revolute and prismatic joints (not
+  BALL sub-joints). URDF has no standard field for it, so it is written as a custom child
+  element `<armature value="0.012"/>` of the `<joint>` (also in xacro output). Standard URDF
+  parsers ignore it; read it from `joint/armature@value` in your own tooling. MJCF export
+  writes it as MuJoCo's native `armature="..."` joint attribute. Without the field, nothing is
+  emitted.
 - The overrides only take effect if the config is loaded **before** the robot is built:
 
   ```python

@@ -29,6 +29,7 @@ from onshape_robotics_toolkit.config import (
     record_robot_config,
     record_session,
     record_variable_update,
+    resolve_mate_armature,
     resolve_mate_dynamics_limits,
     resolve_mate_limits,
     resolve_part_name,
@@ -185,6 +186,24 @@ def test_mate_effort_velocity_round_trip(tmp_path: Path) -> None:
     record_mate_name("revolute_1", "Revolute 1", {"min": -1.0, "max": 1.0})
     assert resolve_mate_limits("revolute_1") == {"min": -1.0, "max": 1.0}
     assert resolve_mate_dynamics_limits("revolute_1") == (150.0, 2.0)
+    get_active_session().reset()
+
+
+def test_mate_armature_round_trip(tmp_path: Path) -> None:
+    get_active_session().reset()
+
+    config = ORTConfig(names=NameOverrides(mates={"revolute_1": NameOverrideEntry(name="joint1", armature=0.012)}))
+    config_path = tmp_path / "armature.yaml"
+    config.save(config_path)
+
+    loaded = ORTConfig.load(config_path)
+    assert loaded.names.mates["revolute_1"].armature == 0.012
+    assert resolve_mate_armature("revolute_1") == 0.012
+    assert resolve_mate_armature("unknown") is None
+
+    # API limits recorded later must not drop the user armature
+    record_mate_name("revolute_1", "Revolute 1", {"min": -1.0, "max": 1.0})
+    assert resolve_mate_armature("revolute_1") == 0.012
     get_active_session().reset()
 
 
